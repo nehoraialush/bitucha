@@ -1,0 +1,234 @@
+generator client {
+  provider = "prisma-client"
+  output = "../apps/api/src/generated"
+  engineType = "client"
+}
+datasource db {
+  provider = "postgresql"
+}
+model Employee {
+  id String @id @default(uuid())
+  email String @unique
+  name String
+  passwordHash String
+  role String
+  active Boolean @default(true)
+  sessions Session[]
+  createdAt DateTime @default(now())
+}
+model Session {
+  id String @id @default(uuid())
+  tokenHash String @unique
+  csrf String
+  employeeId String
+  employee Employee @relation(fields:[employeeId],references:[id])
+  expiresAt DateTime
+}
+model Customer {
+  id String @id @default(uuid())
+  number Int @unique @default(autoincrement())
+  name String
+  email String?
+  phone String
+  address String @default("")
+  notes String @default("")
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  pets Pet[]
+  policies Policy[]
+  cases ServiceCase[]
+  tasks Task[]
+}
+model Pet {
+  id String @id @default(uuid())
+  customerId String
+  customer Customer @relation(fields:[customerId],references:[id])
+  name String
+  species String
+  breed String
+  sex String
+  birthDate DateTime @db.Date
+  chip String? @unique
+  vaccinated Boolean
+  neutered Boolean @default(false)
+  weight Float?
+  medicalHistory String @default("")
+  policies Policy[]
+  createdAt DateTime @default(now())
+}
+model ProductVersion {
+  id String @id @default(uuid())
+  code String
+  version Int
+  name String
+  species String
+  minAgeMonths Int
+  maxAgeMonths Int
+  premiumCents Int
+  annualLimitCents Int
+  deductibleCents Int
+  reimbursementBps Int
+  waitingDays Int
+  coverages Json
+  published Boolean @default(true)
+  createdAt DateTime @default(now())
+  policies Policy[]
+  @@unique([code,version])
+}
+model Policy {
+  id String @id @default(uuid())
+  number Int @unique @default(autoincrement())
+  customerId String
+  customer Customer @relation(fields:[customerId],references:[id])
+  petId String
+  pet Pet @relation(fields:[petId],references:[id])
+  productId String
+  product ProductVersion @relation(fields:[productId],references:[id])
+  status String @default("DRAFT")
+  startDate DateTime @db.Date
+  endDate DateTime @db.Date
+  cancelledAt DateTime? @db.Date
+  snapshot Json
+  premiumCents Int
+  annualLimitCents Int
+  reservedCents Int @default(0)
+  paidCents Int @default(0)
+  version Int @default(1)
+  underwritingReason String @default("")
+  conditionsAccepted Boolean @default(false)
+  paymentMethod String @default("")
+  createdAt DateTime @default(now())
+  exclusions Json @default("[]")
+  suspensions PolicySuspension[]
+  claims Claim[]
+  charges Charge[]
+  @@index([petId,status])
+}
+model Claim {
+  id String @id @default(uuid())
+  number Int @unique @default(autoincrement())
+  policyId String
+  policy Policy @relation(fields:[policyId],references:[id])
+  status String @default("SUBMITTED")
+  eventDate DateTime @db.Date
+  diagnosis String
+  clinic String
+  reason String @default("")
+  approvedCents Int @default(0)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  lines ClaimLine[]
+  payment PaymentOrder?
+}
+model ClaimLine {
+  id String @id @default(uuid())
+  claimId String
+  claim Claim @relation(fields:[claimId],references:[id])
+  category String
+  position Int @default(0)
+  description String
+  costCents Int
+  approvedCents Int @default(0)
+  reason String @default("")
+}
+model PaymentOrder {
+  id String @id @default(uuid())
+  claimId String @unique
+  claim Claim @relation(fields:[claimId],references:[id])
+  amountCents Int
+  status String @default("APPROVED")
+  executedAt DateTime?
+  createdAt DateTime @default(now())
+}
+model Charge {
+  id String @id @default(uuid())
+  policyId String
+  policy Policy @relation(fields:[policyId],references:[id])
+  amountCents Int
+  paidCents Int @default(0)
+  creditedCents Int @default(0)
+  kind String @default("PREMIUM")
+  dueAt DateTime @db.Date
+  createdAt DateTime @default(now())
+}
+model LedgerEntry {
+  id String @id @default(uuid())
+  customerId String
+  policyId String
+  referenceId String
+  kind String
+  amountCents Int
+  createdAt DateTime @default(now())
+  @@index([customerId,createdAt])
+}
+model Document {
+  id String @id @default(uuid())
+  number Int @unique @default(autoincrement())
+  customerId String
+  policyId String?
+  claimId String?
+  type String
+  title String
+  snapshot Json
+  signedAt DateTime?
+  signedBy String?
+  createdAt DateTime @default(now())
+  @@index([customerId])
+}
+model ServiceCase {
+  id String @id @default(uuid())
+  number Int @unique @default(autoincrement())
+  customerId String
+  customer Customer @relation(fields:[customerId],references:[id])
+  subject String
+  description String
+  priority String
+  status String @default("OPEN")
+  assignedTo String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model AuditEvent {
+  id String @id @default(uuid())
+  employeeId String
+  action String
+  entityId String
+  customerId String?
+  reason String @default("")
+  before Json?
+  after Json?
+  processId String
+  createdAt DateTime @default(now())
+  @@index([customerId,createdAt])
+}
+model Command {
+  id String @id @default(uuid())
+  key String
+  employeeId String
+  action String
+  requestHash String
+  response Json
+  createdAt DateTime @default(now())
+  @@unique([employeeId,action,key])
+}
+
+model PolicySuspension {
+ id String @id @default(uuid())
+ policyId String
+ policy Policy @relation(fields:[policyId],references:[id])
+ startDate DateTime @db.Date
+ endDate DateTime? @db.Date
+ reason String
+ createdAt DateTime @default(now())
+}
+model Task {
+ id String @id @default(uuid())
+ customerId String
+ customer Customer @relation(fields:[customerId],references:[id])
+ title String
+ dueAt DateTime @db.Date
+ assignedTo String
+ status String @default("OPEN")
+ createdAt DateTime @default(now())
+ completedAt DateTime?
+}

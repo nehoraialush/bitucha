@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+.env.*
+apps/api/src/generated
+playwright-report
+test-results
+coverage
+*.log

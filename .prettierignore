@@ -1,0 +1,4 @@
+apps/api/src/generated/
+node_modules/
+dist/
+package-lock.json

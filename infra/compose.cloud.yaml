@@ -1,0 +1,19 @@
+# Cloud-only build override: use the platform-provided trusted public CA without embedding it in the image.
+services:
+  api:
+    build:
+      network: host
+      extra_hosts:
+        - "proxy:${CLOUD_PROXY_IP:?Resolve the cloud proxy hostname before building}"
+      secrets:
+        - custom_ca
+  web:
+    build:
+      network: host
+      extra_hosts:
+        - "proxy:${CLOUD_PROXY_IP:?Resolve the cloud proxy hostname before building}"
+      secrets:
+        - custom_ca
+secrets:
+  custom_ca:
+    file: ${NODE_EXTRA_CA_CERTS:?Cloud TLS trust bundle must be present}
