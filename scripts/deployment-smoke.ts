@@ -17,6 +17,26 @@ const login = await fetch(base + "/api/v1/auth/login", {
 assert.equal(login.status, 201);
 const cookie = login.headers.get("set-cookie")!.split(";")[0];
 const headers = { Cookie: cookie };
+const actionsResponse = await fetch(base + "/api/v1/business-actions", {
+  headers,
+});
+assert.equal(actionsResponse.status, 200);
+const actions = await actionsResponse.json();
+assert.equal(actions.length, 16);
+const employeesResponse = await fetch(base + "/api/v1/employees", { headers });
+assert.equal(employeesResponse.status, 200);
+const staff = await employeesResponse.json();
+assert(staff.employees.length > 0);
+assert(
+  staff.employees.every((e: any) => e.version >= 1 && !("passwordHash" in e)),
+);
+const resetPreview = await fetch(base + "/api/v1/system/reset-preview", {
+  headers,
+});
+assert.equal(resetPreview.status, 200);
+const preview = await resetPreview.json();
+assert(preview.preserved.includes("EmployeePermission"));
+assert(preview.counts.Customer >= 100);
 const reports = await fetch(base + "/api/v1/reports", { headers });
 assert.equal(reports.status, 200);
 const summary = await reports.json();

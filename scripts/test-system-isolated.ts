@@ -87,6 +87,19 @@ try {
   assert.equal(login.status, 201);
   cookie = login.headers.get("set-cookie")!.split(";")[0];
   csrf = login.data.csrf;
+  const employees = await request("/employees");
+  const administrator = employees.data.employees.find(
+    (e: any) => e.id === employee.id,
+  );
+  const protectedAdministrator = await request(
+    `/employees/${employee.id}/update`,
+    { ...administrator, grants: ["employee.write"], permissionMode: "CUSTOM" },
+  );
+  assert.equal(protectedAdministrator.status, 409);
+  assert.equal((await request("/auth/session")).status, 200);
+  console.log(
+    "PASS: last full administrator cannot be removed by permission changes",
+  );
   const restoreKey = randomUUID();
   const restored = await request(
     "/system/restore-demo",

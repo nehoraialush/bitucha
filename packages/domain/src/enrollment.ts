@@ -1,5 +1,5 @@
 // Versioned simulation rules. These are not actuarial or regulatory rules.
-export const ENROLLMENT_VERSION = 2;
+export const ENROLLMENT_VERSION = 3;
 export type Field = {
   key: string;
   label: string;
@@ -102,7 +102,7 @@ export const enrollmentSteps: StepDefinition[] = [
     fields: [
       f("channel", "ערוץ", "select", true, ["PHONE", "WEB", "AGENT", "CLINIC"]),
       f("source", "מקור הפנייה", "text", true),
-      f("requestType", "סוג בקשה", "select", true, ["NEW"]),
+      f("requestType", "סוג בקשה", "select", true, ["NEW", "RENEWAL"]),
       f("urgency", "דחיפות", "select", true, ["NORMAL", "HIGH", "URGENT"]),
       f("notes", "הערות פנימיות", "textarea"),
     ],
@@ -280,8 +280,19 @@ export function enrollmentDefinition(
   version = ENROLLMENT_VERSION,
 ): StepDefinition[] {
   if (version === ENROLLMENT_VERSION) return enrollmentSteps;
-  if (version === 1)
+  if (version === 2)
     return enrollmentSteps.map((s) =>
+      s.number === 1
+        ? {
+            ...s,
+            fields: s.fields.map((f) =>
+              f.key === "requestType" ? { ...f, options: ["NEW"] } : f,
+            ),
+          }
+        : s,
+    );
+  if (version === 1)
+    return enrollmentDefinition(2).map((s) =>
       s.number === 6
         ? {
             ...s,

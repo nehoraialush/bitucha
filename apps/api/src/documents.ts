@@ -96,6 +96,8 @@ export async function documentHtml(id: string) {
     details += row("זיכוי ביטול", money(s.creditCents));
   if (s.refundDueCents != null)
     details += row("החזר שטרם בוצע", money(s.refundDueCents));
+  if (s.renewedFromNumber)
+    details += row("חידוש של פוליסה מספר", s.renewedFromNumber);
   const terms = s.terms ?? policy?.snapshot;
   if (terms)
     details +=
@@ -114,6 +116,7 @@ export async function documentHtml(id: string) {
       UNDERWRITING: [4, 11, 12],
       POLICY: [9, 10, 12, 15],
       SIMULATED_SIGNATURE: [13, 16],
+      RENEWAL_CONFIRMATION: [9, 12, 15, 17],
     };
     for (const step of s.steps) {
       if (!(selected[d.type] || []).includes(step.number)) continue;

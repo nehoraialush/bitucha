@@ -7,6 +7,13 @@ datasource db {
   provider = "postgresql"
 }
 model Employee {
+  version Int @default(1)
+  department String @default("")
+  team String @default("")
+  managerId String?
+  permissionMode String @default("ROLE")
+  approvalLimitCents Int?
+  permissionGrants EmployeePermission[]
   id String @id @default(uuid())
   email String @unique
   name String
@@ -80,6 +87,7 @@ model ProductVersion {
   @@unique([code,version])
 }
 model Policy {
+  renewedFromId String? @unique
   id String @id @default(uuid())
   number Int @unique @default(autoincrement())
   customerId String
@@ -254,6 +262,7 @@ model WorkflowInstance {
  @@index([type,status,updatedAt])
 }
 model Application {
+ renewalOfId String?
  id String @id @default(uuid())
  number Int @unique @default(autoincrement())
  workflowId String @unique
@@ -331,4 +340,12 @@ model SystemSetting {
  key String @id
  value Json
  updatedAt DateTime @updatedAt
+}
+
+model EmployeePermission {
+ id String @id @default(uuid())
+ employeeId String
+ employee Employee @relation(fields:[employeeId],references:[id])
+ permission String
+ @@unique([employeeId,permission])
 }

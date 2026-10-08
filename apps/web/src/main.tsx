@@ -1,3 +1,4 @@
+import { EmployeesWorkspace } from "./components/employees-workspace";
 import { SystemReset } from "./components/system-reset";
 import { EnrollmentWorkspace } from "./components/enrollment-workspace";
 import React, { useEffect, useState } from "react";
@@ -60,6 +61,7 @@ function App() {
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [initialEnrollmentId, setInitialEnrollmentId] = useState("");
   const [section, setSection] = useState("dashboard"),
     [customers, setCustomers] = useState<any[]>([]),
     [query, setQuery] = useState(""),
@@ -86,7 +88,7 @@ function App() {
     setWorkspace(await api(`/customers/${id}/workspace`));
     setSection("customers");
   }
-  async function refresh() {
+  async function refresh(includeWorkspace = true) {
     const [c, p, r, q] = await Promise.all([
       api("/customers?q=" + encodeURIComponent(query)),
       api("/products"),
@@ -97,7 +99,7 @@ function App() {
     setProducts(p);
     setReports(r);
     setQueues(q);
-    if (workspace)
+    if (workspace && includeWorkspace)
       setWorkspace(await api(`/customers/${workspace.id}/workspace`));
   }
   useEffect(() => {
@@ -354,6 +356,9 @@ function App() {
     ["products", "מוצרי ביטוח", ShieldCheck],
     ["queues", "תורי טיפול", ClipboardList],
     ["reports", "דוחות כספיים", BarChart3],
+    ...(can("employee.write")
+      ? [["employees", "עובדים והרשאות", Users] as const]
+      : []),
     ...(can("system.reset")
       ? [["administration", "ניהול ואיפוס", ShieldCheck] as const]
       : []),
@@ -522,12 +527,23 @@ function App() {
               </div>
             </>
           )}
+          {section === "employees" && (
+            <EmployeesWorkspace
+              actorId={session.employee.id}
+              onSelfUpdate={() => {
+                setSession(null);
+                setCsrf("");
+                setWorkspace(null);
+              }}
+            />
+          )}
           {section === "administration" && (
             <SystemReset
               onReset={async () => {
                 setWorkspace(null);
                 setModal(null);
-                await refresh();
+                setInitialEnrollmentId("");
+                await refresh(false);
               }}
             />
           )}
@@ -536,6 +552,7 @@ function App() {
               session={session}
               products={products}
               onCustomer={loadWorkspace}
+              initialId={initialEnrollmentId}
             />
           )}
           {section === "products" && (
@@ -896,6 +913,28 @@ function App() {
                           </td>
                           <td>
                             <div className="actions">
+                              {["ACTIVE", "EXPIRED"].includes(p.status) &&
+                                can("policy.write") && (
+                                  <Button
+                                    variant="secondary"
+                                    onClick={async () => {
+                                      try {
+                                        const w = await api(
+                                          "/applications",
+                                          "POST",
+                                          { renewalOfId: p.id },
+                                          crypto.randomUUID(),
+                                        );
+                                        setInitialEnrollmentId(w.id);
+                                        setSection("enrollment");
+                                      } catch (e: any) {
+                                        setError(e.message);
+                                      }
+                                    }}
+                                  >
+                                    חידוש פוליסה
+                                  </Button>
+                                )}
                               {p.status === "QUOTED" && can("policy.write") && (
                                 <Button onClick={() => open("activate", p)}>
                                   הפעלה

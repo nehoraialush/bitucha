@@ -1,12 +1,13 @@
 import {
   BadRequestException,
+  ForbiddenException,
   ConflictException,
   NotFoundException,
 } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "./generated/client";
 import { db } from "./db";
-import { Actor, need, permissions } from "./auth";
+import { Actor, need, permissions, actorPermissions } from "./auth";
 import {
   text,
   optional,
@@ -166,10 +167,10 @@ export class InsuranceService {
     });
   }
   async workspace(id: string, actor: Actor) {
-    const medical = permissions[actor.role]?.some((p) =>
+    const medical = actorPermissions(actor).some((p) =>
       ["*", "application.read", "claim.write"].includes(p),
     );
-    const applicationRead = permissions[actor.role]?.some((p) =>
+    const applicationRead = actorPermissions(actor).some((p) =>
       ["*", "application.read"].includes(p),
     );
     const customer = must(
@@ -585,6 +586,14 @@ export class InsuranceService {
           throw new ConflictException("לתביעה כבר קיימת החלטה");
         if (result.approvedCents > 500000 && decision === "APPROVE")
           need(actor, "claim.large");
+        if (
+          decision === "APPROVE" &&
+          actor.approvalLimitCents != null &&
+          result.approvedCents > actor.approvalLimitCents
+        )
+          throw new ForbiddenException(
+            "הסכום חורג מסמכות האישור שהוגדרה לעובד",
+          );
         const amount = decision === "APPROVE" ? result.approvedCents : 0;
         const status =
           decision === "APPROVE"

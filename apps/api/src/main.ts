@@ -1,3 +1,4 @@
+import { EmployeeService } from "./employees";
 import { BusinessActionService } from "./business-actions";
 import { SystemResetService } from "./system-reset";
 import { json as expressJson } from "express";
@@ -32,7 +33,14 @@ import {
 import cookieParser from "cookie-parser";
 import type { Request, Response } from "express";
 import { db } from "./db";
-import { AuthRequest, SessionGuard, login, logout, permissions } from "./auth";
+import {
+  AuthRequest,
+  SessionGuard,
+  login,
+  logout,
+  permissions,
+  actorPermissions,
+} from "./auth";
 import { InsuranceService } from "./service";
 import { documentHtml, documentPdf, authorizeDocument } from "./documents";
 @Controller("api/v1")
@@ -40,6 +48,25 @@ import { documentHtml, documentPdf, authorizeDocument } from "./documents";
 @ApiCookieAuth("bitucha_session")
 class ApiController {
   private service = new InsuranceService();
+  private employees = new EmployeeService();
+  @Get("employees") employeeList(@Req() r: AuthRequest) {
+    return this.employees.list(r.actor);
+  }
+  @Post("employees") employeeCreate(
+    @Req() r: AuthRequest,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.employees.create(r.actor, b, key);
+  }
+  @Post("employees/:id/update") employeeUpdate(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.employees.update(r.actor, id, b, key);
+  }
   private businessActions = new BusinessActionService();
   @Get("business-actions") availableActions(@Req() r: AuthRequest) {
     return this.businessActions.list(r.actor);
@@ -172,7 +199,7 @@ class ApiController {
     return {
       employee: req.actor,
       csrf: req.csrf,
-      permissions: permissions[req.actor.role],
+      permissions: actorPermissions(req.actor),
     };
   }
   @Post("auth/logout") logout(

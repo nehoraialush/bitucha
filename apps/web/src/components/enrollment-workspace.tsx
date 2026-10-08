@@ -127,6 +127,7 @@ function Input({
                   AGENT: "סוכן",
                   CLINIC: "מרפאה",
                   NEW: "הצטרפות חדשה",
+                  RENEWAL: "חידוש",
                   NORMAL: "רגילה",
                   HIGH: "גבוהה",
                   URGENT: "דחופה",
@@ -206,7 +207,9 @@ export function EnrollmentWorkspace({
   session,
   products,
   onCustomer,
+  initialId,
 }: {
+  initialId?: string;
   session: any;
   products: any[];
   onCustomer: (id: string) => void;
@@ -234,6 +237,12 @@ export function EnrollmentWorkspace({
     can("policy.write") &&
     !["COMPLETED", "REJECTED"].includes(workflow?.status);
   const loadList = () => api("/applications").then(setList);
+  useEffect(() => {
+    if (initialId)
+      api("/applications/" + initialId)
+        .then((w) => accept(w))
+        .catch((e) => setError(e.message));
+  }, [initialId]);
   useEffect(() => {
     loadList().catch((e) => setError(e.message));
   }, []);
@@ -486,6 +495,9 @@ export function EnrollmentWorkspace({
               חזרה לתור הבקשות
             </Button>
             <strong>בקשה {workflow.application.number}</strong>
+            {workflow.renewal && (
+              <span>חידוש פוליסה {workflow.renewal.number}</span>
+            )}
             <span>{statusText[workflow.status] || workflow.status}</span>
             <span>גרסה {workflow.version}</span>
             <progress

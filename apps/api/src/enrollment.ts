@@ -79,7 +79,13 @@ async function load(tx: Tx, id: string) {
   });
   if (!w || w.type !== "ENROLLMENT")
     throw new NotFoundException("בקשת הצטרפות לא נמצאה");
-  return w;
+  const renewal = w.application?.renewalOfId
+    ? await tx.policy.findUnique({
+        where: { id: w.application.renewalOfId },
+        include: { customer: true, pet: true },
+      })
+    : null;
+  return { ...w, renewal };
 }
 function stepAnswers(w: Awaited<ReturnType<typeof load>>, n: number) {
   return (latestSteps(w.steps)[n]?.answers || {}) as Record<string, any>;
@@ -127,6 +133,22 @@ async function eligibility(
 ) {
   const pet = stepAnswers(w, 3);
   const startDate = date(start, "תחילת כיסוי");
+  if (w.application?.renewalOfId) {
+    const source = w.renewal;
+    if (!source || !["ACTIVE", "EXPIRED"].includes(source.status))
+      throw new ConflictException("הפוליסה המקורית אינה ניתנת לחידוש");
+    if (
+      pet.petId !== source.petId ||
+      stepAnswers(w, 2).customerId !== source.customerId ||
+      start !== source.endDate.toISOString().slice(0, 10)
+    )
+      throw new BadRequestException(
+        "חידוש מחייב את אותו לקוח וחיה ואת מועד סיום הפוליסה הקודמת",
+      );
+    if (await tx.policy.findUnique({ where: { renewedFromId: source.id } }))
+      throw new ConflictException("כבר הופקה פוליסה מחודשת");
+  }
+
   if (startDate < today())
     throw new BadRequestException("אין הרשאה להפקה רטרואקטיבית");
   const months = ageMonths(date(pet.birthDate, "תאריך לידה"), startDate);
@@ -264,14 +286,92 @@ export class EnrollmentService {
   async create(actor: Actor, b: any, key: unknown) {
     need(actor, "policy.write");
     return command.command(actor, "application.create", key, b, async (tx) => {
+      let renewal: any = null;
+      if (b.renewalOfId) {
+        renewal = await tx.policy.findUnique({
+          where: { id: text(b.renewalOfId, "פוליסה לחידוש") },
+          include: { customer: true, pet: true },
+        });
+        if (!renewal || !["ACTIVE", "EXPIRED"].includes(renewal.status))
+          throw new ConflictException("פוליסה אינה ניתנת לחידוש");
+        if (renewal.endDate < today())
+          throw new BadRequestException(
+            "חידוש רטרואקטיבי דורש תהליך חריגה שטרם מומש",
+          );
+        if (
+          await tx.policy.findUnique({ where: { renewedFromId: renewal.id } })
+        )
+          throw new ConflictException("כבר קיימת פוליסה מחודשת");
+      }
       const w = await tx.workflowInstance.create({
         data: {
           type: "ENROLLMENT",
           definitionVersion: ENROLLMENT_VERSION,
           assignedTo: actor.id,
-          application: { create: {} },
+          application: {
+            create: renewal
+              ? {
+                  renewalOfId: renewal.id,
+                  customerId: renewal.customerId,
+                  petId: renewal.petId,
+                  productId: renewal.productId,
+                }
+              : {},
+          },
         },
       });
+      if (renewal) {
+        const customer = renewal.customer,
+          pet = renewal.pet,
+          names = customer.name.split(" ");
+        const defaults: Record<number, any> = {
+          1: {
+            channel: "PHONE",
+            source: "חידוש פוליסה " + renewal.number,
+            requestType: "RENEWAL",
+            urgency: "NORMAL",
+          },
+          2: {
+            ...customer.profile,
+            customerId: customer.id,
+            firstName: customer.profile.firstName || names[0],
+            lastName: customer.profile.lastName || names.slice(1).join(" "),
+            identifier: customer.identifier || "",
+            phone: customer.phone,
+            email: customer.email || "",
+            address: customer.address,
+          },
+          3: {
+            ...pet.profile,
+            petId: pet.id,
+            name: pet.name,
+            species: pet.species,
+            breed: pet.breed,
+            sex: pet.sex,
+            birthDate: pet.birthDate.toISOString().slice(0, 10),
+            chip: pet.chip || "",
+            weight: pet.weight,
+            neutered: pet.neutered,
+          },
+          4: {
+            productId: renewal.productId,
+            startDate: renewal.endDate.toISOString().slice(0, 10),
+          },
+          9: { productId: renewal.productId },
+        };
+        for (const [number, answers] of Object.entries(defaults))
+          await tx.workflowStep.create({
+            data: {
+              workflowId: w.id,
+              number: Number(number),
+              revision: 1,
+              definitionVersion: ENROLLMENT_VERSION,
+              answers: json(answers),
+              completed: false,
+              employeeId: actor.id,
+            },
+          });
+      }
       await audit(tx, actor, "application.create", w.id, 1, {
         definitionVersion: ENROLLMENT_VERSION,
       });
@@ -313,6 +413,11 @@ export class EnrollmentService {
         if (b.complete) {
           const errors = validateStep(n, a, w.definitionVersion);
           if (errors.length) throw new BadRequestException(errors.join("; "));
+          if (
+            n === 1 &&
+            (a.requestType === "RENEWAL") !== !!w.application?.renewalOfId
+          )
+            throw new BadRequestException("סוג הבקשה אינו תואם לפוליסה לחידוש");
           if (n === 2) {
             const duplicate = await tx.customer.findUnique({
               where: { identifier: a.identifier },
@@ -336,7 +441,7 @@ export class EnrollmentService {
               tx,
               w,
               p,
-              stepAnswers(w, 4).startDate || a.startDate,
+              n === 4 ? a.startDate : stepAnswers(w, 4).startDate,
             );
           }
           if (n === 5 || n === 6) {
@@ -835,6 +940,21 @@ export class EnrollmentService {
             },
           });
         }
+        if (c.customerId) {
+          if (customer.identifier && customer.identifier !== c.identifier)
+            throw new ConflictException(
+              "מזהה הלקוח השתנה. יש לבדוק מחדש את הבקשה",
+            );
+          if (!customer.identifier)
+            customer = await tx.customer.update({
+              where: { id: customer.id },
+              data: {
+                identifier: c.identifier,
+                profile: json({ ...(customer.profile as any), ...c }),
+                version: { increment: 1 },
+              },
+            });
+        }
         const startDate = date(stepAnswers(w, 4).startDate, "תחילת כיסוי");
         let animal = pet.petId
           ? await tx.pet.findUnique({ where: { id: pet.petId } })
@@ -874,6 +994,7 @@ export class EnrollmentService {
           payment = stepAnswers(w, 15);
         const policy = await tx.policy.create({
           data: {
+            renewedFromId: w.application!.renewalOfId,
             customerId: customer.id,
             petId: animal.id,
             productId: p.id,
@@ -944,6 +1065,23 @@ export class EnrollmentService {
             },
           });
           docs.push(d.id);
+        }
+        if (w.renewal) {
+          const renewalDocument = await tx.document.create({
+            data: {
+              customerId: customer.id,
+              policyId: policy.id,
+              type: "RENEWAL_CONFIRMATION",
+              title: "אישור חידוש פוליסה — סימולציה",
+              snapshot: json({
+                ...snapshot,
+                renewedFromNumber: w.renewal.number,
+              }),
+              signedAt: new Date(stepAnswers(w, 16).signedAt),
+              signedBy: stepAnswers(w, 16).signerName,
+            },
+          });
+          docs.push(renewalDocument.id);
         }
         if (!animal.chip)
           await tx.task.create({

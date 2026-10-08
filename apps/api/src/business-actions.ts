@@ -1,5 +1,6 @@
+import { EmployeeService } from "./employees";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
-import { Actor, need, permissions } from "./auth";
+import { Actor, need, permissions, actorPermissions } from "./auth";
 import { InsuranceService } from "./service";
 import { EnrollmentService } from "./enrollment";
 import { text } from "./validation";
@@ -23,7 +24,7 @@ export const businessActions: ActionDefinition[] = [
     permission: "policy.write",
     entityRequired: false,
     preconditions: [],
-    fields: [],
+    fields: ["renewalOfId"],
     effects: ["יצירת תהליך ובקשה עם מספר ייחודי"],
     documents: [],
   },
@@ -188,13 +189,68 @@ export const businessActions: ActionDefinition[] = [
     effects: ["רישום חתימה מדומה"],
     documents: ["המסמך שנחתם"],
   },
+  {
+    id: "employee.create",
+    name: "יצירת עובד",
+    module: "מנהלה",
+    permission: "employee.write",
+    entityRequired: false,
+    preconditions: ["סמכות למתן ההרשאות המבוקשות", "דוא״ל ייחודי"],
+    fields: [
+      "name",
+      "email",
+      "password",
+      "role",
+      "active",
+      "department",
+      "team",
+      "managerId",
+      "permissionMode",
+      "grants",
+      "approvalLimitCents",
+    ],
+    effects: [
+      "חשבון עם סיסמה מוצפנת חד־כיוונית",
+      "הרשאות במסד",
+      "תיעוד ביקורת",
+    ],
+    documents: [],
+  },
+  {
+    id: "employee.update",
+    name: "עדכון עובד והרשאות",
+    module: "מנהלה",
+    permission: "employee.write",
+    entityRequired: true,
+    preconditions: [
+      "גרסת עובד עדכנית",
+      "ללא הסלמת הרשאות",
+      "מנהל ללא מעגל",
+      "מנהל פעיל אחר נשמר",
+    ],
+    fields: [
+      "version",
+      "name",
+      "role",
+      "active",
+      "department",
+      "team",
+      "managerId",
+      "permissionMode",
+      "grants",
+      "approvalLimitCents",
+    ],
+    effects: ["עדכון חשבון והרשאות", "ביטול sessions קיימים", "תיעוד ביקורת"],
+    documents: [],
+  },
 ];
 export class BusinessActionService {
   private insurance = new InsuranceService();
+  private employees = new EmployeeService();
   private enrollment = new EnrollmentService();
   list(actor: Actor) {
     return businessActions.filter((a) =>
-      permissions[actor.role]?.some((p) => p === "*" || p === a.permission),
+      actorPermissions(actor).some((p) => p === "*" || p === a.permission),
     );
   }
   async execute(actor: Actor, actionId: string, b: any, key: unknown) {
@@ -206,6 +262,10 @@ export class BusinessActionService {
     if (typeof input !== "object" || Array.isArray(input))
       throw new BadRequestException("קלט פעולה אינו תקין");
     switch (actionId) {
+      case "employee.create":
+        return this.employees.create(actor, input, key);
+      case "employee.update":
+        return this.employees.update(actor, id, input, key);
       case "application.open":
         return this.enrollment.create(actor, input, key);
       case "application.step.save":

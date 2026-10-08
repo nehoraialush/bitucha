@@ -63,6 +63,7 @@ export class SystemResetService {
             "Session",
             "_BituchaMigration",
             "SystemSetting",
+            "EmployeePermission",
           ],
           simulationOnly: true,
         };
@@ -144,6 +145,7 @@ export class SystemResetService {
             "Session",
             "_BituchaMigration",
             "SystemSetting",
+            "EmployeePermission",
           ],
         };
         await tx.auditEvent.create({

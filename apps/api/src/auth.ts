@@ -9,7 +9,14 @@ import { createHash, randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 import type { Request, Response } from "express";
 import { db } from "./db";
-export type Actor = { id: string; name: string; email: string; role: string };
+export type Actor = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  grants?: string[];
+  approvalLimitCents?: number | null;
+};
 export const permissions: Record<string, string[]> = {
   ADMIN: ["*"],
   SERVICE: ["customer.write", "case.write", "document.sign"],
@@ -20,8 +27,20 @@ export const permissions: Record<string, string[]> = {
   FINANCE: ["payment.execute", "collection.write", "policy.cancel"],
   AUDITOR: [],
 };
+export function actorPermissions(actor: Actor) {
+  return actor.grants ?? permissions[actor.role] ?? [];
+}
+function employeePermissions(user: {
+  role: string;
+  permissionMode: string;
+  permissionGrants: { permission: string }[];
+}) {
+  return user.permissionMode === "CUSTOM"
+    ? user.permissionGrants.map((g) => g.permission)
+    : permissions[user.role] || [];
+}
 export function need(actor: Actor, permission: string) {
-  if (!permissions[actor.role]?.some((p) => p === "*" || p === permission))
+  if (!actorPermissions(actor).some((p) => p === "*" || p === permission))
     throw new ForbiddenException("אין הרשאה לפעולה זו");
 }
 export type AuthRequest = Request & { actor: Actor; csrf: string };
@@ -39,7 +58,10 @@ export async function login(req: Request, res: Response, body: any) {
   const record = attempts.get(key);
   if (record && record.until > now && record.count >= 8)
     throw new HttpException("יותר מדי ניסיונות. יש להמתין 15 דקות", 429);
-  const user = await db.employee.findUnique({ where: { email } });
+  const user = await db.employee.findUnique({
+    where: { email },
+    include: { permissionGrants: true },
+  });
   if (
     !user?.active ||
     password.length > 256 ||
@@ -77,7 +99,7 @@ export async function login(req: Request, res: Response, body: any) {
       role: user.role,
     },
     csrf,
-    permissions: permissions[user.role],
+    permissions: employeePermissions(user),
   };
 }
 export class SessionGuard implements CanActivate {
@@ -93,7 +115,7 @@ export class SessionGuard implements CanActivate {
       typeof token === "string"
         ? await db.session.findUnique({
             where: { tokenHash: hash(token) },
-            include: { employee: true },
+            include: { employee: { include: { permissionGrants: true } } },
           })
         : null;
     if (!session || session.expiresAt < new Date() || !session.employee.active)
@@ -103,6 +125,8 @@ export class SessionGuard implements CanActivate {
       name: session.employee.name,
       email: session.employee.email,
       role: session.employee.role,
+      grants: employeePermissions(session.employee),
+      approvalLimitCents: session.employee.approvalLimitCents,
     };
     req.csrf = session.csrf;
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {

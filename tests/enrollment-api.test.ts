@@ -19,6 +19,7 @@ const workflows: string[] = [];
 const customers: string[] = [];
 const commands: string[] = [];
 let w: any;
+let firstPolicy: any;
 async function req(
   path: string,
   body?: any,
@@ -200,6 +201,9 @@ afterAll(async () => {
     await db.productVersion.delete({ where: { id: product.id } });
   }
   if (employee) {
+    await db.employeePermission.deleteMany({
+      where: { employeeId: employee.id },
+    });
     await db.session.deleteMany({ where: { employeeId: employee.id } });
     await db.employee.delete({ where: { id: employee.id } });
   }
@@ -208,7 +212,7 @@ afterAll(async () => {
 describe.sequential("Enrollment workflow on real PostgreSQL", () => {
   it("only advertises implemented actions permitted for the employee", async () => {
     const admin = await req("/business-actions");
-    expect(admin.data.length).toBe(14);
+    expect(admin.data.length).toBe(16);
     const reviewer = await req(
       "/business-actions",
       undefined,
@@ -267,6 +271,7 @@ describe.sequential("Enrollment workflow on real PostgreSQL", () => {
     const result = await req(`/applications/${w.id}/issue`, body, key);
     expect(result.status, JSON.stringify(result.data)).toBe(201);
     expect(result.data.policy.status).toBe("ACTIVE");
+    firstPolicy = result.data.policy;
     const replay = await req(`/applications/${w.id}/issue`, body, key);
     expect(replay.data.policy.id).toBe(result.data.policy.id);
     const charges = await db.charge.findMany({
@@ -547,5 +552,63 @@ describe.sequential("Enrollment workflow on real PostgreSQL", () => {
         data: { role: "UNDERWRITER" },
       });
     }
+  });
+  it("renews through the complete workflow, binds the prior period and prevents duplicate renewals", async () => {
+    const old = await db.policy.findUniqueOrThrow({
+      where: { id: firstPolicy.id },
+      include: { customer: true, pet: true, charges: true },
+    });
+    for (const charge of old.charges) {
+      expect(
+        (
+          await req(`/charges/${charge.id}/collect-simulated`, {
+            amountCents: charge.amountCents,
+          })
+        ).status,
+      ).toBe(201);
+    }
+    const created = await req("/applications", { renewalOfId: old.id });
+    expect(created.status).toBe(201);
+    w = created.data;
+    workflows.push(w.id);
+    expect(w.application.renewalOfId).toBe(old.id);
+    expect(w.steps.every((s: any) => !s.completed)).toBe(true);
+    expect(w.currentStep).toBe(1);
+    const a1 = { ...answers(1), requestType: "RENEWAL" };
+    expect((await save(1, a1)).status).toBe(201);
+    const a2 = { ...(old.customer.profile as any), customerId: old.customerId };
+    expect((await save(2, a2)).status).toBe(201);
+    const a3 = {
+      ...(old.pet.profile as any),
+      petId: old.petId,
+      chip: old.pet.chip,
+    };
+    expect((await save(3, a3)).status).toBe(201);
+    expect((await save(4, answers(4))).status).toBe(400);
+    expect(
+      (
+        await save(4, {
+          ...answers(4),
+          startDate: old.endDate.toISOString().slice(0, 10),
+        })
+      ).status,
+    ).toBe(201);
+    for (let n = 5; n <= 17; n++) expect((await save(n)).status).toBe(201);
+    const issue = await req(`/applications/${w.id}/issue`, {
+      version: w.version,
+    });
+    expect(issue.status, JSON.stringify(issue.data)).toBe(201);
+    expect(issue.data.policy.renewedFromId).toBe(old.id);
+    expect(issue.data.policy.startDate.slice(0, 10)).toBe(
+      old.endDate.toISOString().slice(0, 10),
+    );
+    expect(issue.data.documents).toHaveLength(6);
+    expect(
+      (await db.policy.findUniqueOrThrow({ where: { id: old.id } })).snapshot,
+    ).toEqual(old.snapshot);
+    expect((await req("/applications", { renewalOfId: old.id })).status).toBe(
+      409,
+    );
+    expect(await db.policy.count({ where: { renewedFromId: old.id } })).toBe(1);
   });
 });

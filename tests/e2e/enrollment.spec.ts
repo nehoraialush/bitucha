@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
 import { db } from "../../apps/api/src/db";
 import {
@@ -6,6 +7,8 @@ import {
   declarations,
 } from "../../packages/domain/src/enrollment";
 let workflowId = "";
+const extraWorkflows: string[] = [];
+const extraEmployees: string[] = [];
 test("resumes enrollment draft, completes 18 steps and creates policy and signed snapshot documents", async ({
   page,
 }) => {
@@ -224,10 +227,136 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
     path: "test-results/enrollment-completed.png",
     fullPage: true,
   });
+  await page
+    .getByRole("button", { name: "פתיחת תיק הלקוח", exact: true })
+    .click();
+  await page.getByRole("button", { name: "פוליסות", exact: true }).click();
+  const renewalResponse = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/api/v1/applications") &&
+      r.request().method() === "POST" &&
+      r.status() === 201,
+  );
+  await page.getByRole("button", { name: "חידוש פוליסה", exact: true }).click();
+  const renewal = await (await renewalResponse).json();
+  extraWorkflows.push(renewal.id);
+  await expect(
+    page.getByRole("heading", { name: "1. פתיחת בקשת הצטרפות", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("סוג בקשה *", { exact: true })).toHaveValue(
+    "RENEWAL",
+  );
+  expect(renewal.application.renewalOfId).toBe(application.policyId);
+  await page.getByRole("button", { name: "ניהול ואיפוס", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "החזרת נתוני דוגמה", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "בדיקת היקף המחיקה לפני איפוס", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "רשומות שיימחקו", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "איפוס המערכת ומחיקת כל הנתונים העסקיים",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "ביטול", exact: true }).click();
+  await page
+    .getByRole("button", { name: "החזרת נתוני דוגמה", exact: true })
+    .click();
+  const restoreDialog = page.getByRole("dialog", {
+    name: "אישור החזרת נתוני דוגמה",
+    exact: true,
+  });
+  await expect(
+    restoreDialog.getByRole("button", {
+      name: "אישור החזרת נתוני דוגמה",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await restoreDialog
+    .getByRole("button", { name: "ביטול", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "עובדים והרשאות", exact: true })
+    .click();
+  await page.getByRole("button", { name: "יצירת עובד", exact: true }).click();
+  let employeeDialog = page.getByRole("dialog", {
+    name: "יצירת עובד",
+    exact: true,
+  });
+  const employeeName = "חתם בדיקת דפדפן " + Date.now();
+  await employeeDialog
+    .getByLabel("שם עובד", { exact: true })
+    .fill(employeeName);
+  await employeeDialog
+    .getByLabel("דוא״ל עובד", { exact: true })
+    .fill(randomUUID() + "@example.invalid");
+  await employeeDialog
+    .getByLabel("סיסמה ראשונית — 16 תווים לפחות", { exact: true })
+    .fill(randomUUID() + randomUUID());
+  const employeeCreated = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/api/v1/employees") &&
+      r.request().method() === "POST" &&
+      r.status() === 201,
+  );
+  await employeeDialog
+    .getByRole("button", { name: "שמירת עובד", exact: true })
+    .click();
+  const employee = await (await employeeCreated).json();
+  extraEmployees.push(employee.id);
+  await page
+    .getByRole("button", { name: "עריכת " + employeeName, exact: true })
+    .click();
+  employeeDialog = page.getByRole("dialog", {
+    name: "עריכת עובד",
+    exact: true,
+  });
+  await employeeDialog
+    .getByLabel("תקרת אישור תביעה (₪) — ריק לפי סמכות תפקיד", { exact: true })
+    .fill("250");
+  await employeeDialog
+    .getByLabel("מקור הרשאות עובד", { exact: true })
+    .selectOption("CUSTOM");
+  await employeeDialog
+    .getByLabel("קריאת בקשות ומסמכי הצטרפות רפואיים", { exact: true })
+    .check();
+  await employeeDialog
+    .getByLabel("החלטת חיתום ובדיקת מסמכים", { exact: true })
+    .check();
+  await employeeDialog
+    .getByRole("button", { name: "שמירת עובד", exact: true })
+    .click();
+  await expect(employeeDialog).not.toBeVisible();
+  const configured = await db.employee.findUniqueOrThrow({
+    where: { id: employee.id },
+    include: { permissionGrants: true },
+  });
+  expect(configured.approvalLimitCents).toBe(25000);
+  expect(configured.permissionGrants).toHaveLength(2);
 });
 test.afterAll(async () => {
+  for (const id of extraEmployees) {
+    await db.employeePermission.deleteMany({ where: { employeeId: id } });
+    await db.session.deleteMany({ where: { employeeId: id } });
+    await db.auditEvent.deleteMany({ where: { entityId: id } });
+    await db.employee.deleteMany({ where: { id } });
+  }
   if (!workflowId) return;
   const app = await db.application.findUnique({ where: { workflowId } });
+  for (const id of extraWorkflows) {
+    await db.approvalRequest.deleteMany({ where: { workflowId: id } });
+    await db.workflowAttachment.deleteMany({ where: { workflowId: id } });
+    await db.workflowStep.deleteMany({ where: { workflowId: id } });
+    await db.application.deleteMany({ where: { workflowId: id } });
+    await db.workflowInstance.deleteMany({ where: { id } });
+    await db.auditEvent.deleteMany({ where: { entityId: id } });
+  }
+
   await db.approvalRequest.deleteMany({ where: { workflowId } });
   await db.workflowAttachment.deleteMany({ where: { workflowId } });
   await db.workflowStep.deleteMany({ where: { workflowId } });
