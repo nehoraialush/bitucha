@@ -1,3 +1,7 @@
+import { BusinessActionService } from "./business-actions";
+import { SystemResetService } from "./system-reset";
+import { json as expressJson } from "express";
+import { EnrollmentService } from "./enrollment";
 import { documentContracts } from "./openapi";
 import "reflect-metadata";
 import {
@@ -30,12 +34,121 @@ import type { Request, Response } from "express";
 import { db } from "./db";
 import { AuthRequest, SessionGuard, login, logout, permissions } from "./auth";
 import { InsuranceService } from "./service";
-import { documentHtml, documentPdf } from "./documents";
+import { documentHtml, documentPdf, authorizeDocument } from "./documents";
 @Controller("api/v1")
 @ApiTags("ביטוחה")
 @ApiCookieAuth("bitucha_session")
 class ApiController {
   private service = new InsuranceService();
+  private businessActions = new BusinessActionService();
+  @Get("business-actions") availableActions(@Req() r: AuthRequest) {
+    return this.businessActions.list(r.actor);
+  }
+  @Post("business-actions/:id/execute") executeBusinessAction(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.businessActions.execute(r.actor, id, b, key);
+  }
+  private enrollment = new EnrollmentService();
+  private systemReset = new SystemResetService();
+  @Post("system/restore-demo") restoreDemo(
+    @Req() r: AuthRequest,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.systemReset.restore(r.actor, b, key);
+  }
+  @Get("system/reset-preview") resetPreview(@Req() r: AuthRequest) {
+    return this.systemReset.preview(r.actor);
+  }
+  @Post("system/reset") resetSystem(
+    @Req() r: AuthRequest,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.systemReset.execute(r.actor, b, key);
+  }
+  @Get("applications") applications(@Req() r: AuthRequest) {
+    return this.enrollment.list(r.actor);
+  }
+  @Post("applications") applicationCreate(
+    @Req() r: AuthRequest,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.create(r.actor, b, key);
+  }
+  @Get("applications/:id") application(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+  ) {
+    return this.enrollment.get(r.actor, id);
+  }
+  @Get("applications/:id/history") applicationHistory(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+  ) {
+    return this.enrollment.history(r.actor, id);
+  }
+  @Post("applications/:id/steps/:number") applicationStep(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Param("number") n: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.save(r.actor, id, Number(n), b, key);
+  }
+  @Post("applications/:id/underwrite") applicationDecision(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.decide(r.actor, id, b, key);
+  }
+  @Post("applications/:id/attachments") applicationUpload(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.upload(r.actor, id, b, key);
+  }
+  @Post("applications/:id/attachments/:attachmentId/review") reviewAttachment(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Param("attachmentId") attachmentId: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.reviewAttachment(r.actor, id, attachmentId, b, key);
+  }
+  @Get("application-attachments/:id") async applicationDownload(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Res() res: Response,
+  ) {
+    const a = await this.enrollment.attachment(r.actor, id);
+    res.setHeader("Content-Type", a.mediaType);
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename*=UTF-8''" + encodeURIComponent(a.filename),
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(Buffer.from(a.content));
+  }
+  @Post("applications/:id/issue") applicationIssue(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.enrollment.issue(r.actor, id, b, key);
+  }
   @Get("health") async health() {
     await db.$queryRaw`SELECT 1`;
     return { status: "ok", simulation: true };
@@ -81,8 +194,11 @@ class ApiController {
   ) {
     return this.service.updateCustomer(r.actor, id, b);
   }
-  @Get("customers/:id/workspace") workspace(@Param("id") id: string) {
-    return this.service.workspace(id);
+  @Get("customers/:id/workspace") workspace(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+  ) {
+    return this.service.workspace(id, r.actor);
   }
   @Post("customers/:id/pets") pet(
     @Req() r: AuthRequest,
@@ -175,15 +291,19 @@ class ApiController {
     return this.service.caseStatus(r.actor, id, b);
   }
   @Get("documents/:id/preview") async doc(
+    @Req() r: AuthRequest,
     @Param("id") id: string,
     @Res() res: Response,
   ) {
+    await authorizeDocument(r.actor, id);
     res.type("html").send(await documentHtml(id));
   }
   @Get("documents/:id/pdf") async pdf(
+    @Req() r: AuthRequest,
     @Param("id") id: string,
     @Res() res: Response,
   ) {
+    await authorizeDocument(r.actor, id);
     res
       .type("pdf")
       .setHeader(
@@ -294,7 +414,8 @@ class Errors implements ExceptionFilter {
 @Module({ controllers: [ApiController] })
 class AppModule {}
 export async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  app.use(expressJson({ limit: "2mb" }));
   app.use(cookieParser());
   app.useGlobalGuards(new SessionGuard());
   app.useGlobalFilters(new Errors());

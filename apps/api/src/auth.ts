@@ -13,8 +13,8 @@ export type Actor = { id: string; name: string; email: string; role: string };
 export const permissions: Record<string, string[]> = {
   ADMIN: ["*"],
   SERVICE: ["customer.write", "case.write", "document.sign"],
-  SALES: ["customer.write", "policy.write", "case.write"],
-  UNDERWRITER: ["underwriting.decide"],
+  SALES: ["customer.write", "policy.write", "case.write", "application.read"],
+  UNDERWRITER: ["underwriting.decide", "application.read"],
   CLAIMS: ["claim.write", "claim.decide"],
   CLAIMS_MANAGER: ["claim.write", "claim.decide", "claim.large"],
   FINANCE: ["payment.execute", "collection.write", "policy.cancel"],

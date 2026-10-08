@@ -35,6 +35,8 @@ export const localDate = (value: string) =>
   new Date(value).toLocaleDateString("he-IL", { timeZone: "Asia/Jerusalem" });
 export const statusText: Record<string, string> = {
   ACTIVE: "פעילה",
+  WAITING_APPROVAL: "ממתינה לאישור",
+  READY: "מוכנה להפקה",
   DRAFT: "טיוטה",
   QUOTED: "הצעה",
   UNDERWRITING_PENDING: "ממתינה לחיתום",

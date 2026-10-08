@@ -1,3 +1,5 @@
+import { SystemReset } from "./components/system-reset";
+import { EnrollmentWorkspace } from "./components/enrollment-workspace";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -346,9 +348,15 @@ function App() {
   const navigation = [
     ["dashboard", "סביבת עבודה", LayoutDashboard],
     ["customers", "לקוחות ומבוטחים", Users],
+    ...(can("application.read")
+      ? [["enrollment", "הצטרפות וחיתום", ClipboardList] as const]
+      : []),
     ["products", "מוצרי ביטוח", ShieldCheck],
     ["queues", "תורי טיפול", ClipboardList],
     ["reports", "דוחות כספיים", BarChart3],
+    ...(can("system.reset")
+      ? [["administration", "ניהול ואיפוס", ShieldCheck] as const]
+      : []),
   ] as const;
   return (
     <div className="shell">
@@ -513,6 +521,22 @@ function App() {
                 </section>
               </div>
             </>
+          )}
+          {section === "administration" && (
+            <SystemReset
+              onReset={async () => {
+                setWorkspace(null);
+                setModal(null);
+                await refresh();
+              }}
+            />
+          )}
+          {section === "enrollment" && (
+            <EnrollmentWorkspace
+              session={session}
+              products={products}
+              onCustomer={loadWorkspace}
+            />
           )}
           {section === "products" && (
             <>

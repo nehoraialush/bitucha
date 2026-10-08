@@ -25,6 +25,8 @@ model Session {
   expiresAt DateTime
 }
 model Customer {
+  identifier String? @unique
+  profile Json @default("{}")
   id String @id @default(uuid())
   number Int @unique @default(autoincrement())
   name String
@@ -40,6 +42,7 @@ model Customer {
   tasks Task[]
 }
 model Pet {
+  profile Json @default("{}")
   id String @id @default(uuid())
   customerId String
   customer Customer @relation(fields:[customerId],references:[id])
@@ -57,6 +60,7 @@ model Pet {
   createdAt DateTime @default(now())
 }
 model ProductVersion {
+  riders ProductRider[]
   id String @id @default(uuid())
   code String
   version Int
@@ -231,4 +235,100 @@ model Task {
  status String @default("OPEN")
  createdAt DateTime @default(now())
  completedAt DateTime?
+}
+
+model WorkflowInstance {
+ id String @id @default(uuid())
+ type String
+ definitionVersion Int @default(1)
+ status String @default("DRAFT")
+ version Int @default(1)
+ currentStep Int @default(1)
+ assignedTo String
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ application Application?
+ steps WorkflowStep[]
+ approvals ApprovalRequest[]
+ attachments WorkflowAttachment[]
+ @@index([type,status,updatedAt])
+}
+model Application {
+ id String @id @default(uuid())
+ number Int @unique @default(autoincrement())
+ workflowId String @unique
+ workflow WorkflowInstance @relation(fields:[workflowId],references:[id])
+ customerId String?
+ petId String?
+ productId String?
+ policyId String? @unique
+ createdAt DateTime @default(now())
+ @@index([customerId])
+}
+model WorkflowStep {
+ id String @id @default(uuid())
+ workflowId String
+ workflow WorkflowInstance @relation(fields:[workflowId],references:[id])
+ number Int
+ revision Int
+ definitionVersion Int
+ answers Json
+ completed Boolean @default(false)
+ employeeId String
+ createdAt DateTime @default(now())
+ @@unique([workflowId,number,revision])
+}
+model ApprovalRequest {
+ id String @id @default(uuid())
+ workflowId String
+ workflow WorkflowInstance @relation(fields:[workflowId],references:[id])
+ status String @default("PENDING")
+ kind String
+ requestedBy String
+ decidedBy String?
+ reason String @default("")
+ decision Json?
+ workflowVersion Int
+ createdAt DateTime @default(now())
+ decidedAt DateTime?
+ @@index([status,kind])
+}
+model WorkflowAttachment {
+ reviewedBy String?
+ reviewReason String @default("")
+ reviewedAt DateTime?
+ id String @id @default(uuid())
+ workflowId String
+ workflow WorkflowInstance @relation(fields:[workflowId],references:[id])
+ kind String
+ filename String
+ mediaType String
+ digest String
+ content Bytes
+ status String @default("RECEIVED")
+ employeeId String
+ createdAt DateTime @default(now())
+ @@index([workflowId])
+}
+
+model ProductRider {
+ id String @id @default(uuid())
+ productId String
+ product ProductVersion @relation(fields:[productId],references:[id])
+ code String
+ name String
+ premiumCents Int
+ limitIncreaseCents Int @default(0)
+ coverage Json?
+ species String
+ minAgeMonths Int
+ maxAgeMonths Int
+ createdAt DateTime @default(now())
+ @@unique([productId,code])
+}
+
+model SystemSetting {
+ key String @id
+ value Json
+ updatedAt DateTime @updatedAt
 }

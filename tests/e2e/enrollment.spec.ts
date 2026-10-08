@@ -1,0 +1,247 @@
+import { test, expect } from "@playwright/test";
+import { db } from "../../apps/api/src/db";
+import {
+  medicalQuestions,
+  bodySystems,
+  declarations,
+} from "../../packages/domain/src/enrollment";
+let workflowId = "";
+test("resumes enrollment draft, completes 18 steps and creates policy and signed snapshot documents", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await page.goto("/");
+  await page.getByLabel("דוא״ל").fill(process.env.ADMIN_EMAIL!);
+  await page.getByLabel("סיסמה").fill(process.env.ADMIN_PASSWORD!);
+  await page.getByRole("button", { name: "כניסה למערכת", exact: true }).click();
+  await page
+    .getByRole("button", { name: "הצטרפות וחיתום", exact: true })
+    .click();
+  const createdResponse = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/api/v1/applications") &&
+      r.request().method() === "POST" &&
+      r.status() === 201,
+  );
+  await page
+    .getByRole("button", { name: "הצטרפות חדשה לביטוח", exact: true })
+    .click();
+  workflowId = (await (await createdResponse).json()).id;
+  await expect(
+    page.getByRole("heading", { name: "1. פתיחת בקשת הצטרפות", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("ערוץ *", { exact: true }).selectOption("PHONE");
+  await page.getByLabel("מקור הפנייה *", { exact: true }).fill("בדיקת דפדפן");
+  await page.getByLabel("סוג בקשה *", { exact: true }).selectOption("NEW");
+  await page.getByLabel("דחיפות *", { exact: true }).selectOption("NORMAL");
+  const draftResponse = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/steps/1") &&
+      r.request().method() === "POST" &&
+      r.status() === 201,
+  );
+  await page.getByRole("button", { name: "שמירת טיוטה", exact: true }).click();
+  const draft = await (await draftResponse).json();
+  workflowId = draft.id;
+  await page.reload();
+  await page
+    .getByRole("button", { name: "הצטרפות וחיתום", exact: true })
+    .click();
+  await page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("cell", {
+        name: String(draft.application.number),
+        exact: true,
+      }),
+    })
+    .getByRole("button", { name: "פתיחת בקשה", exact: true })
+    .click();
+  await expect(page.getByLabel("מקור הפנייה *", { exact: true })).toHaveValue(
+    "בדיקת דפדפן",
+  );
+  const next = async (n: number) => {
+    await page
+      .getByRole("button", { name: "בדיקה, שמירה והמשך", exact: true })
+      .click();
+    await expect(page.locator(".workflow-body h2").first()).toContainText(
+      `${n + 1}.`,
+    );
+  };
+  await next(1);
+  const fields2: Record<string, string> = {
+    "שם פרטי *": "לקוח",
+    "שם משפחה *": "בדיקת אשף",
+    "מזהה בדוי *": "E2E-" + Date.now(),
+    "תאריך לידה *": "1990-01-01",
+    "טלפון נייד *": "0501234567",
+    "דואר אלקטרוני *": "e2e@example.invalid",
+    "רחוב ומספר *": "רחוב בדוי 1",
+    "עיר *": "עיר בדויה",
+  };
+  for (const [label, value] of Object.entries(fields2))
+    await page.getByLabel(label, { exact: true }).fill(value);
+  for (const [label, value] of Object.entries({
+    "סוג מזהה *": "SIMULATED_ID",
+    "אמצעי התקשרות *": "EMAIL",
+    "שפה *": "HE",
+    "אומתו הפרטים *": "true",
+    "הסכמה לשימוש במידע בדוי *": "true",
+  }))
+    await page.getByLabel(label, { exact: true }).selectOption(value);
+  await next(2);
+  for (const [label, value] of Object.entries({
+    "שם *": "חיית בדיקת אשף",
+    "גזע *": "מעורב",
+    "תאריך לידה *": "2023-01-01",
+    "משקל בק״ג *": "5",
+    "מקום מגורים עיקרי *": "בית",
+    "מספר שבב — 15 ספרות": String(
+      800000000000000 + Math.floor(Math.random() * 1000000000),
+    ),
+  }))
+    await page.getByLabel(label, { exact: true }).fill(value);
+  for (const [label, value] of Object.entries({
+    "סוג *": "DOG",
+    "גזע מעורב *": "true",
+    "מין *": "MALE",
+    "מסורס / מעוקרת *": "true",
+    "שימוש *": "COMPANION",
+  }))
+    await page.getByLabel(label, { exact: true }).selectOption(value);
+  await next(3);
+  await page
+    .getByLabel("מוצר מבוקש *", { exact: true })
+    .selectOption("demo-product-DOG-BASIC");
+  await page
+    .getByLabel("נתוני החיה נבדקו *", { exact: true })
+    .selectOption("true");
+  await next(4);
+  for (const q of medicalQuestions) {
+    const details = page.locator("details").filter({
+      has: page.locator("summary").getByText(q.label, { exact: true }),
+    });
+    await details.locator("summary").click();
+    await details
+      .getByLabel("האם קיים מצב רפואי בתחום זה? *", { exact: true })
+      .selectOption("false");
+  }
+  await next(5);
+  for (const q of bodySystems) {
+    const details = page.locator("details").filter({
+      has: page.locator("summary").getByText(q.label, { exact: true }),
+    });
+    await details.locator("summary").click();
+    await details
+      .getByLabel("האם קיים מצב רפואי בתחום זה? *", { exact: true })
+      .selectOption("false");
+  }
+  await next(6);
+  await page
+    .getByLabel("אין היסטוריה נוספת *", { exact: true })
+    .selectOption("true");
+  await next(7);
+  await page
+    .getByLabel("מחוסן לפי ההצהרה *", { exact: true })
+    .selectOption("true");
+  await next(8);
+  await page
+    .getByLabel("מסלול נבחר *", { exact: true })
+    .selectOption("demo-product-DOG-BASIC");
+  await next(9);
+  await page
+    .getByLabel("בחירת ההרחבות נבדקה *", { exact: true })
+    .selectOption("true");
+  await next(10);
+  await page
+    .getByLabel("אישור פירוט חישוב המחיר המדומה *", { exact: true })
+    .selectOption("true");
+  await next(11);
+  await page
+    .getByLabel("העברה לבדיקת חיתום *", { exact: true })
+    .selectOption("true");
+  await next(12);
+  for (const d of declarations)
+    await page.getByLabel(d.label + " *", { exact: true }).selectOption("true");
+  await next(13);
+  await page
+    .getByLabel("רשימת המסמכים נבדקה *", { exact: true })
+    .selectOption("true");
+  await next(14);
+  await page
+    .getByLabel("תדירות חיוב *", { exact: true })
+    .selectOption("MONTHLY");
+  await page
+    .getByLabel("אמצעי תשלום מדומה *", { exact: true })
+    .selectOption("SIMULATED_TRANSFER");
+  await page
+    .getByLabel("אישור תנאי הגבייה המדומה *", { exact: true })
+    .selectOption("true");
+  await next(15);
+  await page.getByLabel("שם החותם *", { exact: true }).fill("לקוח בדיקת אשף");
+  await page
+    .getByLabel("תפקיד החותם *", { exact: true })
+    .selectOption("POLICYHOLDER");
+  await page
+    .getByLabel("חתימה מדומה ללא אימות משפטי *", { exact: true })
+    .selectOption("true");
+  const canvas = page.getByLabel("משטח ציור חתימה מדומה");
+  await canvas.scrollIntoViewIfNeeded();
+  const box = await canvas.boundingBox();
+  await page.mouse.move(box!.x + 20, box!.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + 140, box!.y + 90, { steps: 15 });
+  await page.mouse.up();
+  await next(16);
+  await page
+    .getByLabel("כל פרטי הסיכום נבדקו *", { exact: true })
+    .selectOption("true");
+  await next(17);
+  await page
+    .getByRole("button", { name: "הפקת פוליסה ומסמכים", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "הפוליסה הופקה", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "PDF", exact: true }),
+  ).toHaveCount(5);
+  const pdf = await page.request.get(
+    (await page
+      .getByRole("link", { name: "PDF", exact: true })
+      .first()
+      .getAttribute("href")) as string,
+  );
+  expect(pdf.status()).toBe(200);
+  expect((await pdf.body()).subarray(0, 4).toString()).toBe("%PDF");
+  const application = await db.application.findUniqueOrThrow({
+    where: { workflowId },
+  });
+  expect(
+    await db.charge.count({ where: { policyId: application.policyId! } }),
+  ).toBe(12);
+  await page.screenshot({
+    path: "test-results/enrollment-completed.png",
+    fullPage: true,
+  });
+});
+test.afterAll(async () => {
+  if (!workflowId) return;
+  const app = await db.application.findUnique({ where: { workflowId } });
+  await db.approvalRequest.deleteMany({ where: { workflowId } });
+  await db.workflowAttachment.deleteMany({ where: { workflowId } });
+  await db.workflowStep.deleteMany({ where: { workflowId } });
+  await db.application.deleteMany({ where: { workflowId } });
+  await db.workflowInstance.deleteMany({ where: { id: workflowId } });
+  await db.auditEvent.deleteMany({ where: { entityId: workflowId } });
+  if (app?.customerId) {
+    await db.document.deleteMany({ where: { customerId: app.customerId } });
+    await db.ledgerEntry.deleteMany({ where: { customerId: app.customerId } });
+    await db.charge.deleteMany({ where: { policyId: app.policyId! } });
+    await db.task.deleteMany({ where: { customerId: app.customerId } });
+    await db.policy.deleteMany({ where: { customerId: app.customerId } });
+    await db.pet.deleteMany({ where: { customerId: app.customerId } });
+    await db.customer.delete({ where: { id: app.customerId } });
+  }
+  await db.$disconnect();
+});

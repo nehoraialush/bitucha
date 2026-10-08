@@ -11,7 +11,8 @@
     "test:e2e": "playwright test",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "test:system": "tsx scripts/test-system-isolated.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

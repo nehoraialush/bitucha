@@ -6,7 +6,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "./generated/client";
 import { db } from "./db";
-import { Actor, need } from "./auth";
+import { Actor, need, permissions } from "./auth";
 import {
   text,
   optional,
@@ -154,6 +154,8 @@ export class InsuranceService {
             OR: [
               { name: { contains: q, mode: "insensitive" } },
               { phone: { contains: q } },
+              { email: { contains: q, mode: "insensitive" } },
+              { identifier: { contains: q } },
               ...(Number.isInteger(Number(q)) ? [{ number: Number(q) }] : []),
             ],
           }
@@ -163,7 +165,13 @@ export class InsuranceService {
       include: { _count: { select: { pets: true, policies: true } } },
     });
   }
-  async workspace(id: string) {
+  async workspace(id: string, actor: Actor) {
+    const medical = permissions[actor.role]?.some((p) =>
+      ["*", "application.read", "claim.write"].includes(p),
+    );
+    const applicationRead = permissions[actor.role]?.some((p) =>
+      ["*", "application.read"].includes(p),
+    );
     const customer = must(
       await db.customer.findUnique({
         where: { id },
@@ -183,7 +191,33 @@ export class InsuranceService {
     );
     const [documents, audit, ledger] = await Promise.all([
       db.document.findMany({
-        where: { customerId: id },
+        where: {
+          customerId: id,
+          ...(!applicationRead
+            ? {
+                type: {
+                  notIn: [
+                    "APPLICATION",
+                    "HEALTH_DECLARATION",
+                    "UNDERWRITING",
+                    "SIMULATED_SIGNATURE",
+                  ],
+                },
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          number: true,
+          customerId: true,
+          policyId: true,
+          claimId: true,
+          type: true,
+          title: true,
+          signedAt: true,
+          signedBy: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "desc" },
       }),
       db.auditEvent.findMany({
@@ -202,6 +236,11 @@ export class InsuranceService {
     });
     return {
       ...customer,
+      pets: customer.pets.map((p) =>
+        medical
+          ? p
+          : { ...p, medicalHistory: "מידע רפואי מוגבל לפי הרשאה", profile: {} },
+      ),
       documents,
       audit: audit.map((a) => ({
         ...a,
@@ -279,6 +318,7 @@ export class InsuranceService {
   async products() {
     return db.productVersion.findMany({
       where: { published: true },
+      include: { riders: true },
       orderBy: [{ code: "asc" }, { version: "desc" }],
     });
   }
@@ -765,19 +805,32 @@ export class InsuranceService {
         } catch {
           throw new BadRequestException("תאריך הביטול מחוץ לתקופה");
         }
-        const charge = must(
-          await tx.charge.findFirst({
-            where: { policyId: id, kind: "PREMIUM" },
-          }),
-        );
+        const charges = await tx.charge.findMany({
+          where: { policyId: id, kind: "PREMIUM" },
+          orderBy: [{ dueAt: "desc" }, { id: "asc" }],
+        });
+        if (!charges.length)
+          throw new ConflictException("אין לוח חיובים לפוליסה");
+        let remainingCredit = credit;
+        for (const charge of charges) {
+          const allocation = Math.min(
+            remainingCredit,
+            charge.amountCents - charge.creditedCents,
+          );
+          if (allocation > 0)
+            await tx.charge.update({
+              where: { id: charge.id },
+              data: { creditedCents: { increment: allocation } },
+            });
+          remainingCredit -= allocation;
+        }
+        if (remainingCredit !== 0)
+          throw new ConflictException("לוח החיובים אינו תואם לפרמיית הפוליסה");
         const refund = Math.max(
           0,
-          charge.paidCents - (charge.amountCents - credit),
+          charges.reduce((sum, charge) => sum + charge.paidCents, 0) -
+            (p.premiumCents - credit),
         );
-        await tx.charge.update({
-          where: { id: charge.id },
-          data: { creditedCents: credit },
-        });
         const updated = await tx.policy.update({
           where: { id },
           data: {
