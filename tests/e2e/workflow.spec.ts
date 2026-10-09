@@ -86,7 +86,9 @@ test("מסלול לקוח, חיה, פוליסה, תביעה ומסמך בעבר�
   await expect(
     page
       .frameLocator("iframe")
-      .getByText("מסמך פיתוח עם נתונים בדויים בלבד.", { exact: false }),
+      .getByText("מסמך פיתוח לסימולציה מקצועית עם נתונים בדויים בלבד.", {
+        exact: false,
+      }),
   ).toBeVisible();
   await page
     .getByRole("dialog")

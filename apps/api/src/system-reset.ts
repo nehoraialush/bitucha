@@ -12,6 +12,8 @@ import { Prisma } from "./generated/client";
 import { InsuranceService } from "./service";
 // Explicit list: authentication, employee accounts and migration records are preserved.
 export const resetTables = [
+  "SigningEvent",
+  "SigningRequest",
   "WorkflowAttachment",
   "WorkflowStep",
   "ApprovalRequest",
@@ -24,6 +26,7 @@ export const resetTables = [
   "Claim",
   "Charge",
   "LedgerEntry",
+  "DocumentArtifact",
   "Document",
   "ServiceCase",
   "Command",

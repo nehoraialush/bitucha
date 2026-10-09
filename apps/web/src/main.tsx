@@ -1,3 +1,5 @@
+import { DocumentsWorkspace } from "./components/documents-workspace";
+import { SigningPortal } from "./components/signing-portal";
 import { EmployeesWorkspace } from "./components/employees-workspace";
 import { SystemReset } from "./components/system-reset";
 import { EnrollmentWorkspace } from "./components/enrollment-workspace";
@@ -261,6 +263,8 @@ function App() {
               deductibleCents: Math.round(Number(b.deductible) * 100),
               reimbursementBps: Math.round(Number(b.reimbursement) * 100),
               waitingDays: Number(b.waitingDays),
+              waitingWaiverAllowed: f.has("waitingWaiverAllowed"),
+              minClaimFreeMonths: Number(b.minClaimFreeMonths),
               coverages: modal.data.coverages
                 .filter((c: any) => f.has("include-" + c.code))
                 .map((c: any) => ({
@@ -354,6 +358,9 @@ function App() {
       ? [["enrollment", "הצטרפות וחיתום", ClipboardList] as const]
       : []),
     ["products", "מוצרי ביטוח", ShieldCheck],
+    ...(can("document.read")
+      ? [["documents", "מרכז מסמכים", FileText] as const]
+      : []),
     ["queues", "תורי טיפול", ClipboardList],
     ["reports", "דוחות כספיים", BarChart3],
     ...(can("employee.write")
@@ -526,6 +533,9 @@ function App() {
                 </section>
               </div>
             </>
+          )}
+          {section === "documents" && (
+            <DocumentsWorkspace session={session} onCustomer={loadWorkspace} />
           )}
           {section === "employees" && (
             <EmployeesWorkspace
@@ -1914,6 +1924,25 @@ function App() {
                         />
                       </Field>
                     </div>
+                    <label className="checkbox">
+                      <input
+                        name="waitingWaiverAllowed"
+                        type="checkbox"
+                        defaultChecked={modal.data.waitingWaiverAllowed}
+                      />
+                      לאפשר ביטול אכשרה עם היעדר תביעות מאומת ורציפות כיסוי —
+                      כלל סימולציה
+                    </label>
+                    <Field label="מינימום חודשים ללא תביעות">
+                      <input
+                        name="minClaimFreeMonths"
+                        type="number"
+                        min="1"
+                        max="120"
+                        required
+                        defaultValue={modal.data.minClaimFreeMonths || 12}
+                      />
+                    </Field>
                     <h3>כיסויים ותקרות משנה</h3>
                     {modal.data.coverages.map((c: any) => (
                       <div className="coverage-edit" key={c.code}>
@@ -2036,4 +2065,17 @@ function actionName(action: string) {
     )[action] || "פעולה תפעולית"
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+function Root() {
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const change = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", change);
+    return () => window.removeEventListener("hashchange", change);
+  }, []);
+  return hash.startsWith("#/sign/") ? (
+    <SigningPortal token={hash.slice(7)} />
+  ) : (
+    <App />
+  );
+}
+createRoot(document.getElementById("root")!).render(<Root />);

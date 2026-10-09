@@ -1,5 +1,5 @@
 // Versioned simulation rules. These are not actuarial or regulatory rules.
-export const ENROLLMENT_VERSION = 3;
+export const ENROLLMENT_VERSION = 4;
 export type Field = {
   key: string;
   label: string;
@@ -72,6 +72,42 @@ export const bodySystems = bodySystemCategories.flatMap((c) => [
     label: `${c.label} — האם ניתן או צפוי טיפול בתחום זה?`,
   },
 ]);
+// Compact screening retains all twenty systems, grouped by related clinical topics.
+export const compactBodySystems = [
+  {
+    key: "cardiorespiratory",
+    label: "לב ונשימה — מחלת לב, שיעול ממושך או קושי בנשימה",
+  },
+  {
+    key: "digestive",
+    label: "עיכול, כבד ולבלב — הקאות חוזרות, שלשול או מחלה מאובחנת",
+  },
+  { key: "urinary", label: "כליות ושתן — אבנים, דלקות חוזרות או מחלת כליות" },
+  {
+    key: "movement",
+    label: "עצבים, עצמות, מפרקים ושרירים — פרכוסים, צליעה או מגבלה",
+  },
+  {
+    key: "skinSenses",
+    label: "עור, אלרגיות, עיניים, אוזניים ושיניים — מחלה או טיפול מתמשך",
+  },
+  {
+    key: "endocrine",
+    label: "הורמונים, חילוף חומרים וזיהומים — מחלה או בירור רפואי",
+  },
+  { key: "tumors", label: "גידולים וסרטן — גוש, חשד או אבחנה" },
+  {
+    key: "otherSystems",
+    label: "רבייה, התנהגות, מחלות תורשתיות ומולדות — מצב ידוע או חשוד",
+  },
+];
+const noClaimsFields: Field[] = [
+  f("noClaims", "האם קיים אישור היעדר תביעות?", "boolean", true),
+  f("priorInsurer", "המבטח הקודם"),
+  f("claimFreeMonths", "חודשים ללא תביעות", "number"),
+  f("priorCoverageEnd", "סיום הכיסוי הקודם", "date"),
+  f("noClaimsAttachmentId", "מזהה אישור היעדר תביעות"),
+];
 export const medicalDetails = [
   f("onset", "מועד הופעת הבעיה", "date", true),
   f("diagnosis", "אבחנה / תסמין", "text", true),
@@ -179,7 +215,7 @@ export const enrollmentSteps: StepDefinition[] = [
     number: 6,
     title: "שאלון לפי מערכות גוף",
     fields: [],
-    questions: bodySystems,
+    questions: compactBodySystems,
   },
   {
     number: 7,
@@ -216,7 +252,7 @@ export const enrollmentSteps: StepDefinition[] = [
   {
     number: 9,
     title: "השוואת ובחירת מסלול",
-    fields: [f("productId", "מסלול נבחר", "text", true)],
+    fields: [f("productId", "מסלול נבחר", "text", true), ...noClaimsFields],
   },
   {
     number: 10,
@@ -280,29 +316,35 @@ export function enrollmentDefinition(
   version = ENROLLMENT_VERSION,
 ): StepDefinition[] {
   if (version === ENROLLMENT_VERSION) return enrollmentSteps;
-  if (version === 2)
-    return enrollmentSteps.map((s) =>
-      s.number === 1
-        ? {
-            ...s,
-            fields: s.fields.map((f) =>
-              f.key === "requestType" ? { ...f, options: ["NEW"] } : f,
-            ),
-          }
-        : s,
-    );
-  if (version === 1)
-    return enrollmentDefinition(2).map((s) =>
-      s.number === 6
-        ? {
-            ...s,
-            questions: bodySystemCategories.map((c) => ({
-              key: c.key,
-              label: c.label,
-            })),
-          }
-        : s,
-    );
+  if ([1, 2, 3].includes(version))
+    return enrollmentSteps.map((s) => {
+      if (s.number === 6)
+        return {
+          ...s,
+          questions:
+            version === 1
+              ? bodySystemCategories.map((c) => ({
+                  key: c.key,
+                  label: c.label,
+                }))
+              : bodySystems,
+        };
+      if (s.number === 9)
+        return {
+          ...s,
+          fields: s.fields.filter(
+            (f) => !noClaimsFields.some((x) => x.key === f.key),
+          ),
+        };
+      if (s.number === 1 && version < 3)
+        return {
+          ...s,
+          fields: s.fields.map((f) =>
+            f.key === "requestType" ? { ...f, options: ["NEW"] } : f,
+          ),
+        };
+      return s;
+    });
   throw new Error("Unsupported enrollment definition version");
 }
 export type Answers = Record<string, unknown>;
@@ -416,6 +458,19 @@ export function validateStep(
     answers.birthDate > new Date().toISOString().slice(0, 10)
   )
     errors.push("תאריך לידה עתידי");
+  if (number === 9 && version >= 4 && answers.noClaims === true) {
+    for (const key of [
+      "priorInsurer",
+      "claimFreeMonths",
+      "priorCoverageEnd",
+      "noClaimsAttachmentId",
+    ])
+      if (!answers[key])
+        errors.push(
+          "אישור היעדר תביעות: חסר " +
+            (def.fields.find((f) => f.key === key)?.label || key),
+        );
+  }
   if (number === 16) {
     const strokes = answers.strokes;
     if (

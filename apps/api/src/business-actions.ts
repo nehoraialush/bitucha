@@ -1,3 +1,5 @@
+import { SigningService } from "./signing";
+import { retryDocument } from "./documents";
 import { EmployeeService } from "./employees";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { Actor, need, permissions, actorPermissions } from "./auth";
@@ -17,6 +19,51 @@ type ActionDefinition = {
 };
 // Every advertised action has an implemented transactional handler below.
 export const businessActions: ActionDefinition[] = [
+  {
+    id: "application.signing.create",
+    name: "יצירת קישור חתימה ללקוח",
+    module: "חתימות",
+    permission: "policy.write",
+    entityRequired: true,
+    preconditions: ["השלמת 15 שלבים", "גרסה עדכנית", "אין חתימה שהושלמה"],
+    fields: ["version"],
+    effects: ["תוכן מוקפא", "קישור אישי ל־48 שעות", "ביטול קישורים קודמים"],
+    documents: ["הסכם הצטרפות", "הצהרת בריאות", "לוח תשלומים"],
+  },
+  {
+    id: "signing.revoke",
+    name: "ביטול קישור חתימה",
+    module: "חתימות",
+    permission: "policy.write",
+    entityRequired: true,
+    preconditions: ["קישור ממתין"],
+    fields: [],
+    effects: ["ביטול גישת החותם", "תיעוד ביקורת"],
+    documents: [],
+  },
+  {
+    id: "signing.assist",
+    name: "ליווי חותם בהודעה",
+    module: "חתימות",
+    permission: "signing.assist",
+    entityRequired: true,
+    preconditions: ["קישור ממתין בתוקף"],
+    fields: ["message"],
+    effects: ["הודעה ללקוח", "תיעוד אירוע חתימה"],
+    documents: [],
+  },
+  {
+    id: "document.pdf.retry",
+    name: "ניסיון חוזר להפקת PDF",
+    module: "מסמכים",
+    permission: "document.generate",
+    entityRequired: true,
+    preconditions: ["הפקה נכשלה", "הרשאת צפייה במסמך"],
+    fields: [],
+    effects: ["החזרה לתור ההפקה", "שמירת HTML מקורי", "תיעוד ביקורת"],
+    documents: ["PDF של המסמך המקורי"],
+  },
+
   {
     id: "application.open",
     name: "פתיחת בקשת הצטרפות",
@@ -245,6 +292,7 @@ export const businessActions: ActionDefinition[] = [
   },
 ];
 export class BusinessActionService {
+  private signing = new SigningService();
   private insurance = new InsuranceService();
   private employees = new EmployeeService();
   private enrollment = new EnrollmentService();
@@ -262,6 +310,14 @@ export class BusinessActionService {
     if (typeof input !== "object" || Array.isArray(input))
       throw new BadRequestException("קלט פעולה אינו תקין");
     switch (actionId) {
+      case "application.signing.create":
+        return this.signing.create(actor, id, input, key);
+      case "signing.revoke":
+        return this.signing.revoke(actor, id, key);
+      case "signing.assist":
+        return this.signing.assist(actor, id, input, key);
+      case "document.pdf.retry":
+        return retryDocument(actor, id, key);
       case "employee.create":
         return this.employees.create(actor, input, key);
       case "employee.update":

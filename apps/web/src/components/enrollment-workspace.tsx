@@ -1,3 +1,4 @@
+import { SigningMonitor } from "./signing-portal";
 import React, { useEffect, useRef, useState } from "react";
 import { api, money, localDate, statusText } from "../api";
 import { Button } from "./ui/button";
@@ -8,7 +9,7 @@ import {
   StepDefinition,
 } from "../../../../packages/domain/src/enrollment";
 const today = () => new Date().toISOString().slice(0, 10);
-function SignaturePad({
+export function SignaturePad({
   value,
   onChange,
 }: {
@@ -220,6 +221,7 @@ export function EnrollmentWorkspace({
     [answers, setAnswers] = useState<any>({}),
     [dirty, setDirty] = useState(false),
     [busy, setBusy] = useState(false),
+    [saving, setSaving] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [search, setSearch] = useState(""),
@@ -227,6 +229,8 @@ export function EnrollmentWorkspace({
     [pets, setPets] = useState<any[]>([]),
     [history, setHistory] = useState<any[]>([]),
     [panel, setPanel] = useState("form");
+  const saveLock = useRef(false);
+  const editRevision = useRef(0);
   const can = (p: string) =>
     session.permissions.some((x: string) => x === "*" || x === p);
   const def = (workflow?.definition || enrollmentSteps)[
@@ -290,13 +294,17 @@ export function EnrollmentWorkspace({
     setDirty(false);
   };
   const change = (k: string, v: any) => {
+    editRevision.current++;
     setAnswers((a: any) => ({ ...a, [k]: v }));
     setDirty(true);
     setNotice("יש שינויים שטרם נשמרו");
   };
   async function save(complete = false) {
-    if (!workflow || busy) return null;
-    setBusy(true);
+    if (!workflow || busy || saveLock.current) return null;
+    saveLock.current = true;
+    setSaving(true);
+    if (complete) setBusy(true);
+    const revision = editRevision.current;
     setError("");
     try {
       const w = await api(
@@ -305,19 +313,26 @@ export function EnrollmentWorkspace({
         { version: workflow.version, answers: clean(def, answers), complete },
         crypto.randomUUID(),
       );
-      accept(w, complete ? w.currentStep : number);
+      if (complete) accept(w, w.currentStep);
+      else {
+        setWorkflow(w);
+        // Do not replace input values, focus, selection or scroll after a background save.
+        if (revision === editRevision.current) setDirty(false);
+      }
       setNotice(complete ? "השלב נבדק ונשמר" : "הטיוטה נשמרה בשרת");
-      await loadList();
+      if (complete) await loadList();
       return w;
     } catch (e: any) {
       setError(e.message);
       return null;
     } finally {
-      setBusy(false);
+      saveLock.current = false;
+      setSaving(false);
+      if (complete) setBusy(false);
     }
   }
   async function chooseStep(n: number) {
-    if (busy) return;
+    if (busy || saveLock.current) return;
     if (dirty) {
       const w = await save(false);
       if (!w) return;
@@ -362,12 +377,12 @@ export function EnrollmentWorkspace({
     }
   }
   useEffect(() => {
-    if (!dirty || busy || !writable || number === 18) return;
+    if (!dirty || busy || saving || !writable || number === 18) return;
     const timer = setTimeout(() => {
       void save(false);
     }, 1800);
     return () => clearTimeout(timer);
-  }, [dirty, answers, number]);
+  }, [dirty, answers, number, saving]);
   useEffect(() => {
     const customerId = workflow?.steps.find((s: any) => s.number === 2)?.answers
       ?.customerId;
@@ -582,32 +597,37 @@ export function EnrollmentWorkspace({
                     PDF, PNG או JPEG עד 1MB לקובץ. יש להעלות מידע בדוי בלבד.
                   </p>
                   {writable &&
-                    ["MEDICAL", "CHIP", "VACCINATION", "CONSENT"].map(
-                      (kind) => (
-                        <label className="field" key={kind}>
-                          <span>
+                    [
+                      "MEDICAL",
+                      "CHIP",
+                      "VACCINATION",
+                      "CONSENT",
+                      "NO_CLAIMS",
+                    ].map((kind) => (
+                      <label className="field" key={kind}>
+                        <span>
+                          {
                             {
-                              {
-                                MEDICAL: "מסמך רפואי",
-                                CHIP: "מסמך שבב",
-                                VACCINATION: "פנקס חיסונים",
-                                CONSENT: "הסכמה",
-                              }[kind]
-                            }
-                          </span>
-                          <input
-                            type="file"
-                            accept="application/pdf,image/png,image/jpeg"
-                            disabled={busy}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) upload(file, kind);
-                              e.target.value = "";
-                            }}
-                          />
-                        </label>
-                      ),
-                    )}
+                              MEDICAL: "מסמך רפואי",
+                              CHIP: "מסמך שבב",
+                              VACCINATION: "פנקס חיסונים",
+                              CONSENT: "הסכמה",
+                              NO_CLAIMS: "אישור היעדר תביעות",
+                            }[kind]
+                          }
+                        </span>
+                        <input
+                          type="file"
+                          accept="application/pdf,image/png,image/jpeg"
+                          disabled={busy}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) upload(file, kind);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    ))}
                   <table>
                     <thead>
                       <tr>
@@ -728,37 +748,88 @@ export function EnrollmentWorkspace({
                       </select>
                     </label>
                   )}
+                  {number === 16 && (
+                    <SigningMonitor
+                      workflow={workflow}
+                      canCreate={can("policy.write") && !dirty && !saving}
+                      canAssist={can("signing.assist")}
+                      onSigned={() => {
+                        if (!dirty && !saveLock.current)
+                          api("/applications/" + workflow.id)
+                            .then((w) => accept(w, 17))
+                            .catch((e) => setError(e.message));
+                      }}
+                    />
+                  )}
                   <fieldset disabled={!writable || busy || number === 18}>
                     <div className="workflow-fields">
-                      {def.fields.map((field) =>
-                        field.key === "productId" ? (
-                          <label className="field" key={field.key}>
-                            <span>{field.label} *</span>
-                            <select
-                              aria-label={field.label + " *"}
-                              value={answers.productId || ""}
-                              onChange={(e) =>
-                                change("productId", e.target.value)
-                              }
-                            >
-                              <option value="">בחירת מוצר</option>
-                              {products.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name} · גרסה {p.version}
+                      {def.fields
+                        .filter(
+                          (field) =>
+                            ![
+                              "priorInsurer",
+                              "claimFreeMonths",
+                              "priorCoverageEnd",
+                              "noClaimsAttachmentId",
+                            ].includes(field.key) || answers.noClaims === true,
+                        )
+                        .map((field) =>
+                          field.key === "noClaimsAttachmentId" ? (
+                            <label className="field" key={field.key}>
+                              <span>אישור היעדר תביעות</span>
+                              <select
+                                aria-label="אישור היעדר תביעות"
+                                value={answers.noClaimsAttachmentId || ""}
+                                onChange={(e) =>
+                                  change(field.key, e.target.value)
+                                }
+                              >
+                                <option value="">
+                                  יש להעלות אסמכתה בטאב מסמכים
                                 </option>
-                              ))}
-                            </select>
-                          </label>
-                        ) : (
-                          <Input
-                            key={field.key}
-                            field={field}
-                            value={answers[field.key]}
-                            onChange={(v) => change(field.key, v)}
-                          />
-                        ),
-                      )}
+                                {workflow.attachments
+                                  .filter((x: any) => x.kind === "NO_CLAIMS")
+                                  .map((x: any) => (
+                                    <option key={x.id} value={x.id}>
+                                      {x.filename}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                          ) : field.key === "productId" ? (
+                            <label className="field" key={field.key}>
+                              <span>{field.label} *</span>
+                              <select
+                                aria-label={field.label + " *"}
+                                value={answers.productId || ""}
+                                onChange={(e) =>
+                                  change("productId", e.target.value)
+                                }
+                              >
+                                <option value="">בחירת מוצר</option>
+                                {products.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name} · גרסה {p.version}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : (
+                            <Input
+                              key={field.key}
+                              field={field}
+                              value={answers[field.key]}
+                              onChange={(v) => change(field.key, v)}
+                            />
+                          ),
+                        )}
                     </div>
+                    {number === 6 && workflow.definitionVersion >= 4 && (
+                      <p className="hint">
+                        8 שאלות מרכזיות מכסות את כל מערכות הגוף. יש להשיב כן גם
+                        לתסמין, בירור או טיפול ידוע; פירוט נפתח רק כשנדרש.
+                      </p>
+                    )}
                     {def.questions?.map((q) => (
                       <details
                         key={q.key}
@@ -914,10 +985,15 @@ export function EnrollmentWorkspace({
                       </div>
                     )}
                     {number === 16 && (
-                      <SignaturePad
-                        value={answers.strokes || []}
-                        onChange={(v) => change("strokes", v)}
-                      />
+                      <>
+                        <details>
+                          <summary>חתימה מקומית בנוכחות הלקוח</summary>
+                          <SignaturePad
+                            value={answers.strokes || []}
+                            onChange={(v) => change("strokes", v)}
+                          />
+                        </details>
+                      </>
                     )}
                   </fieldset>
                   {[4, 9, 11, 13, 17].includes(number) && (
@@ -1105,7 +1181,7 @@ export function EnrollmentWorkspace({
                     <footer className="workflow-footer">
                       <Button
                         variant="secondary"
-                        disabled={busy}
+                        disabled={busy || saving}
                         onClick={() => save(false)}
                       >
                         שמירת טיוטה
@@ -1113,6 +1189,7 @@ export function EnrollmentWorkspace({
                       <Button
                         disabled={
                           busy ||
+                          saving ||
                           (workflow.status === "WAITING_APPROVAL" &&
                             number === 12)
                         }
@@ -1121,8 +1198,8 @@ export function EnrollmentWorkspace({
                         בדיקה, שמירה והמשך
                       </Button>
                       <span>
-                        {busy
-                          ? "שומר…"
+                        {busy || saving
+                          ? "שומר ברקע…"
                           : dirty
                             ? "שינויים לא שמורים"
                             : "נשמר בשרת"}
@@ -1204,7 +1281,8 @@ function UnderwritingDecision({
   const [decision, setDecision] = useState("APPROVE"),
     [reason, setReason] = useState(""),
     [busy, setBusy] = useState(false),
-    [excluded, setExcluded] = useState<string[]>([]);
+    [excluded, setExcluded] = useState<string[]>([]),
+    [waiveWaiting, setWaiveWaiting] = useState(false);
   const product = workflow.steps.find((s: any) => s.number === 11)?.answers
     .quote.product;
   return (
@@ -1222,6 +1300,7 @@ function UnderwritingDecision({
                 decision,
                 reason,
                 excludedCategories: excluded,
+                waiveWaiting,
               },
               crypto.randomUUID(),
             ),
@@ -1265,6 +1344,16 @@ function UnderwritingDecision({
           החרגת {c.name}
         </label>
       ))}
+      {workflow.steps.find((s: any) => s.number === 9)?.answers.noClaims && (
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={waiveWaiting}
+            onChange={(e) => setWaiveWaiting(e.target.checked)}
+          />
+          ביטול תקופת אכשרה לפי תנאי המוצר ואישור היעדר תביעות שנבדק
+        </label>
+      )}
       <Button disabled={busy}>שמירת החלטת חיתום</Button>
     </form>
   );

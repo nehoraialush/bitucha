@@ -1,9 +1,10 @@
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
 import { db } from "../../apps/api/src/db";
 import {
   medicalQuestions,
-  bodySystems,
+  compactBodySystems,
   declarations,
 } from "../../packages/domain/src/enrollment";
 let workflowId = "";
@@ -11,6 +12,7 @@ const extraWorkflows: string[] = [];
 const extraEmployees: string[] = [];
 test("resumes enrollment draft, completes 18 steps and creates policy and signed snapshot documents", async ({
   page,
+  browser,
 }) => {
   test.setTimeout(90000);
   await page.goto("/");
@@ -63,6 +65,18 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
   await expect(page.getByLabel("מקור הפנייה *", { exact: true })).toHaveValue(
     "בדיקת דפדפן",
   );
+  const sourceInput = page.getByLabel("מקור הפנייה *", { exact: true });
+  await sourceInput.focus();
+  const backgroundSave = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/steps/1") &&
+      r.request().method() === "POST" &&
+      r.status() === 201,
+  );
+  await sourceInput.fill("בדיקת שמירה ללא ריענון");
+  await backgroundSave;
+  await expect(sourceInput).toBeFocused();
+  await expect(sourceInput).toHaveValue("בדיקת שמירה ללא ריענון");
   const next = async (n: number) => {
     await page
       .getByRole("button", { name: "בדיקה, שמירה והמשך", exact: true })
@@ -130,7 +144,7 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
       .selectOption("false");
   }
   await next(5);
-  for (const q of bodySystems) {
+  for (const q of compactBodySystems) {
     const details = page.locator("details").filter({
       has: page.locator("summary").getByText(q.label, { exact: true }),
     });
@@ -151,6 +165,9 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
   await page
     .getByLabel("מסלול נבחר *", { exact: true })
     .selectOption("demo-product-DOG-BASIC");
+  await page
+    .getByLabel("האם קיים אישור היעדר תביעות? *", { exact: true })
+    .selectOption("false");
   await next(9);
   await page
     .getByLabel("בחירת ההרחבות נבדקה *", { exact: true })
@@ -181,21 +198,80 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
     .getByLabel("אישור תנאי הגבייה המדומה *", { exact: true })
     .selectOption("true");
   await next(15);
-  await page.getByLabel("שם החותם *", { exact: true }).fill("לקוח בדיקת אשף");
   await page
-    .getByLabel("תפקיד החותם *", { exact: true })
-    .selectOption("POLICYHOLDER");
-  await page
-    .getByLabel("חתימה מדומה ללא אימות משפטי *", { exact: true })
-    .selectOption("true");
-  const canvas = page.getByLabel("משטח ציור חתימה מדומה");
-  await canvas.scrollIntoViewIfNeeded();
-  const box = await canvas.boundingBox();
-  await page.mouse.move(box!.x + 20, box!.y + 40);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + 140, box!.y + 90, { steps: 15 });
-  await page.mouse.up();
-  await next(16);
+    .getByRole("button", { name: "יצירת קישור חתימה ללקוח", exact: true })
+    .click();
+  const linkInput = page.getByLabel(
+    "קישור אישי לשליחה ללקוח — לשמור במקום פרטי",
+  );
+  await expect(linkInput).not.toHaveValue("");
+  const signingUrl = await linkInput.inputValue();
+  const customerContext = await browser.newContext();
+  const customerPage = await customerContext.newPage();
+  try {
+    await customerPage.goto(signingUrl);
+    await customerPage
+      .getByRole("checkbox", { name: /אני מסכים\/ה שהנציג/ })
+      .check();
+    for (const title of ["הסכם ותנאי פוליסה", "הצהרת בריאות", "לוח תשלומים"]) {
+      await customerPage
+        .getByRole("button", { name: title, exact: true })
+        .click();
+      await expect(customerPage.locator("iframe")).toBeVisible();
+    }
+    await customerPage
+      .getByLabel("הודעה לנציג")
+      .fill("אפשר לעזור לי לקרוא את התנאים?");
+    await customerPage
+      .getByRole("button", { name: "שליחת בקשת עזרה", exact: true })
+      .click();
+    await expect(page.locator(".signing-events")).toContainText(
+      "אפשר לעזור לי לקרוא את התנאים?",
+    );
+    await page
+      .getByLabel("הודעת עזרה ללקוח")
+      .fill("כן, שלושת המסמכים זמינים לקריאה והורדה.");
+    await page
+      .getByRole("button", { name: "שליחת הודעה ללקוח", exact: true })
+      .click();
+    await expect(customerPage.locator(".signing-chat")).toContainText(
+      "שלושת המסמכים זמינים",
+    );
+    const pdfDownload = customerPage.waitForEvent("download");
+    await customerPage
+      .getByRole("button", { name: "הורדת PDF למסמך פתוח", exact: true })
+      .click();
+    const downloaded = await pdfDownload;
+    expect(await downloaded.failure()).toBeNull();
+    const downloadedBytes = await readFile((await downloaded.path())!);
+    expect(downloadedBytes.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(downloadedBytes.length).toBeGreaterThan(1000);
+    await customerPage.getByRole("checkbox", { name: /פתחתי וקראתי/ }).check();
+    await customerPage
+      .getByLabel("שם החותם כפי שמופיע בבקשה")
+      .fill("לקוח בדיקת אשף");
+    const canvas = customerPage.getByLabel("משטח ציור חתימה מדומה");
+    await canvas.scrollIntoViewIfNeeded();
+    const box = await canvas.boundingBox();
+    await customerPage.mouse.move(box!.x + 20, box!.y + 40);
+    await customerPage.mouse.down();
+    await customerPage.mouse.move(box!.x + 140, box!.y + 90, { steps: 15 });
+    await customerPage.mouse.up();
+    await customerPage
+      .getByRole("checkbox", { name: /אני מאשר\/ת את ההצהרות/ })
+      .check();
+    await customerPage
+      .getByRole("button", { name: "חתימה ואישור מסמכים", exact: true })
+      .click();
+    await expect(
+      customerPage.getByRole("heading", { name: "המסמכים נחתמו בהצלחה" }),
+    ).toBeVisible();
+    await expect(page.locator(".workflow-body h2").first()).toContainText(
+      "17.",
+    );
+  } finally {
+    await customerContext.close();
+  }
   await page
     .getByLabel("כל פרטי הסיכום נבדקו *", { exact: true })
     .selectOption("true");
@@ -338,6 +414,37 @@ test("resumes enrollment draft, completes 18 steps and creates policy and signed
   });
   expect(configured.approvalLimitCents).toBe(25000);
   expect(configured.permissionGrants).toHaveLength(2);
+  const policyDocument = await db.document.findFirstOrThrow({
+    where: { policyId: application.policyId!, type: "POLICY" },
+  });
+  await page.getByRole("button", { name: "מרכז מסמכים", exact: true }).click();
+  await page
+    .getByLabel("חיפוש שם או מספר מסמך")
+    .fill(String(policyDocument.number));
+  const documentRow = page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("cell", {
+        name: String(policyDocument.number),
+        exact: true,
+      }),
+    });
+  await expect(documentRow).toBeVisible();
+  await documentRow
+    .getByRole("button", { name: "תצוגת מסמך", exact: true })
+    .click();
+  await expect(
+    page
+      .frameLocator("iframe")
+      .getByRole("heading", {
+        name: "רשימת הכיסויים וגבולות האחריות",
+        exact: true,
+      }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "תצוגת מסמך" })
+    .getByRole("button", { name: "סגירה", exact: true })
+    .click();
 });
 test.afterAll(async () => {
   for (const id of extraEmployees) {
@@ -349,6 +456,10 @@ test.afterAll(async () => {
   if (!workflowId) return;
   const app = await db.application.findUnique({ where: { workflowId } });
   for (const id of extraWorkflows) {
+    await db.signingEvent.deleteMany({
+      where: { request: { workflowId: id } },
+    });
+    await db.signingRequest.deleteMany({ where: { workflowId: id } });
     await db.approvalRequest.deleteMany({ where: { workflowId: id } });
     await db.workflowAttachment.deleteMany({ where: { workflowId: id } });
     await db.workflowStep.deleteMany({ where: { workflowId: id } });
@@ -357,6 +468,8 @@ test.afterAll(async () => {
     await db.auditEvent.deleteMany({ where: { entityId: id } });
   }
 
+  await db.signingEvent.deleteMany({ where: { request: { workflowId } } });
+  await db.signingRequest.deleteMany({ where: { workflowId } });
   await db.approvalRequest.deleteMany({ where: { workflowId } });
   await db.workflowAttachment.deleteMany({ where: { workflowId } });
   await db.workflowStep.deleteMany({ where: { workflowId } });

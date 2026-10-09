@@ -947,7 +947,27 @@ export class InsuranceService {
         if (doc.signedAt) throw new ConflictException("המסמך כבר חתום");
         const updated = await tx.document.update({
           where: { id },
-          data: { signedAt: new Date(), signedBy: actor.id },
+          data: { signedAt: new Date(), signedBy: actor.name },
+        });
+        // A signed edition gets a separate document/PDF; previous finalized bytes stay unchanged.
+        const signedEdition = await tx.document.create({
+          data: {
+            customerId: doc.customerId,
+            policyId: doc.policyId,
+            claimId: doc.claimId,
+            type: doc.type,
+            title: doc.title + " — מהדורה חתומה מדומה",
+            snapshot: {
+              ...(doc.snapshot as any),
+              sourceDocumentNumber: doc.number,
+              sourceDocumentId: doc.id,
+            },
+            signedAt: updated.signedAt,
+            signedBy: actor.name,
+          },
+        });
+        await tx.documentArtifact.create({
+          data: { documentId: signedEdition.id },
         });
         await audit(
           tx,
@@ -1009,6 +1029,16 @@ export class InsuranceService {
             deductibleCents,
             reimbursementBps,
             waitingDays: integer(b.waitingDays, "אכשרה", 0, 365),
+            waitingWaiverAllowed: bool(
+              b.waitingWaiverAllowed ?? old.waitingWaiverAllowed,
+              "כלל ביטול אכשרה",
+            ),
+            minClaimFreeMonths: integer(
+              b.minClaimFreeMonths ?? old.minClaimFreeMonths,
+              "חודשים ללא תביעות",
+              1,
+              120,
+            ),
             coverages,
           },
         });

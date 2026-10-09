@@ -20,8 +20,15 @@ export type Actor = {
 export const permissions: Record<string, string[]> = {
   ADMIN: ["*"],
   SERVICE: ["customer.write", "case.write", "document.sign"],
-  SALES: ["customer.write", "policy.write", "case.write", "application.read"],
-  UNDERWRITER: ["underwriting.decide", "application.read"],
+  SALES: [
+    "customer.write",
+    "policy.write",
+    "case.write",
+    "application.read",
+    "document.read",
+    "signing.assist",
+  ],
+  UNDERWRITER: ["underwriting.decide", "application.read", "signing.assist"],
   CLAIMS: ["claim.write", "claim.decide"],
   CLAIMS_MANAGER: ["claim.write", "claim.decide", "claim.large"],
   FINANCE: ["payment.execute", "collection.write", "policy.cancel"],
@@ -108,6 +115,19 @@ export class SessionGuard implements CanActivate {
     if (req.path === "/api/v1/auth/login" || req.path === "/api/v1/health") {
       if (req.path.endsWith("/login") && req.method !== "POST")
         throw new UnauthorizedException();
+      return true;
+    }
+    if (
+      (req.method === "GET" &&
+        ["/api/v1/signing/view", "/api/v1/signing/document"].includes(
+          req.path,
+        )) ||
+      (req.method === "POST" &&
+        ["/api/v1/signing/event", "/api/v1/signing/sign"].includes(req.path))
+    ) {
+      // Explicit bearer header; SigningService validates scope, expiry and revocation.
+      if (!/^[a-f0-9]{64}$/.test(req.get("x-signing-token") || ""))
+        throw new UnauthorizedException("קישור חתימה נדרש");
       return true;
     }
     const token = req.cookies?.bitucha_session;

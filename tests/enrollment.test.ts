@@ -6,6 +6,7 @@ import {
   paymentSchedule,
   medicalQuestions,
   bodySystems,
+  compactBodySystems,
   bodySystemCategories,
   enrollmentDefinition,
 } from "../packages/domain/src/enrollment";
@@ -97,5 +98,15 @@ describe("Versioned enrollment rules", () => {
     );
     expect(validateStep(6, a, 1)).toEqual([]);
     expect(validateStep(6, a, 2)).toHaveLength(40);
+  });
+  it("uses eight focused body-system questions in v4 without changing old declarations", () => {
+    expect(enrollmentDefinition(4)[5].questions).toEqual(compactBodySystems);
+    expect(compactBodySystems).toHaveLength(8);
+    expect(enrollmentDefinition(3)[5].questions).toHaveLength(60);
+    expect(enrollmentDefinition(3)[8].fields).toHaveLength(1);
+    expect(
+      validateStep(9, { productId: "p", noClaims: true }, 4).join(" "),
+    ).toContain("אישור היעדר תביעות");
+    expect(validateStep(9, { productId: "p", noClaims: false }, 4)).toEqual([]);
   });
 });

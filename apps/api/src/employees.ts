@@ -33,6 +33,8 @@ export const permissionCatalog = [
       .filter((p) => p !== "*"),
   ),
   "employee.write",
+  "document.generate",
+  "document.read",
 ];
 function profile(b: any) {
   const role = choice(b.role, Object.keys(permissions), "תפקיד");

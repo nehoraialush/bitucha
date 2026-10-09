@@ -22,7 +22,7 @@ const actionsResponse = await fetch(base + "/api/v1/business-actions", {
 });
 assert.equal(actionsResponse.status, 200);
 const actions = await actionsResponse.json();
-assert.equal(actions.length, 16);
+assert.equal(actions.length, 20);
 const employeesResponse = await fetch(base + "/api/v1/employees", { headers });
 assert.equal(employeesResponse.status, 200);
 const staff = await employeesResponse.json();

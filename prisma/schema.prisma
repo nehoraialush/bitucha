@@ -67,6 +67,8 @@ model Pet {
   createdAt DateTime @default(now())
 }
 model ProductVersion {
+  waitingWaiverAllowed Boolean @default(false)
+  minClaimFreeMonths Int @default(12)
   riders ProductRider[]
   id String @id @default(uuid())
   code String
@@ -174,6 +176,7 @@ model LedgerEntry {
   @@index([customerId,createdAt])
 }
 model Document {
+  artifact DocumentArtifact?
   id String @id @default(uuid())
   number Int @unique @default(autoincrement())
   customerId String
@@ -259,6 +262,7 @@ model WorkflowInstance {
  steps WorkflowStep[]
  approvals ApprovalRequest[]
  attachments WorkflowAttachment[]
+ signingRequests SigningRequest[]
  @@index([type,status,updatedAt])
 }
 model Application {
@@ -348,4 +352,51 @@ model EmployeePermission {
  employee Employee @relation(fields:[employeeId],references:[id])
  permission String
  @@unique([employeeId,permission])
+}
+
+model SigningRequest {
+ id String @id @default(uuid())
+ workflowId String
+ workflow WorkflowInstance @relation(fields:[workflowId],references:[id])
+ tokenHash String @unique
+ snapshot Json
+ contentHash String
+ workflowVersion Int
+ status String @default("PENDING")
+ expiresAt DateTime
+ createdBy String
+ createdAt DateTime @default(now())
+ signedAt DateTime?
+ events SigningEvent[]
+ @@index([workflowId,createdAt])
+}
+model SigningEvent {
+ id String @id @default(uuid())
+ requestId String
+ request SigningRequest @relation(fields:[requestId],references:[id])
+ kind String
+ actorType String
+ payload Json
+ createdAt DateTime @default(now())
+ @@index([requestId,createdAt])
+}
+
+model DocumentArtifact {
+ id String @id @default(uuid())
+ documentId String @unique
+ document Document @relation(fields:[documentId],references:[id],onDelete:Cascade)
+ templateVersion Int @default(1)
+ status String @default("PENDING")
+ attempts Int @default(0)
+ html String?
+ htmlHash String?
+ content Bytes?
+ pdfHash String?
+ errorCode String?
+ nextAttemptAt DateTime @default(now())
+ leaseToken String?
+ leaseUntil DateTime?
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ @@index([status,nextAttemptAt])
 }

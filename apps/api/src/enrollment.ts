@@ -202,6 +202,8 @@ function medicalRisk(w: Awaited<ReturnType<typeof load>>) {
   if (!stepAnswers(w, 3).chip) risks.push("MISSING_CHIP");
   if (stepAnswers(w, 7).records?.length) risks.push("MEDICAL_HISTORY");
   if (stepAnswers(w, 8).vaccinated !== true) risks.push("VACCINATION_REVIEW");
+  if (stepAnswers(w, 9).noClaims === true)
+    risks.push("NO_CLAIMS_WAIVER_REVIEW");
   return risks;
 }
 async function selectedRiders(
@@ -444,6 +446,19 @@ export class EnrollmentService {
               n === 4 ? a.startDate : stepAnswers(w, 4).startDate,
             );
           }
+          if (
+            n === 9 &&
+            a.noClaims === true &&
+            !w.attachments.some(
+              (x) =>
+                x.id === a.noClaimsAttachmentId &&
+                x.kind === "NO_CLAIMS" &&
+                x.status !== "REJECTED",
+            )
+          )
+            throw new BadRequestException(
+              "נדרש אישור היעדר תביעות השייך לבקשה",
+            );
           if (n === 5 || n === 6) {
             for (const v of Object.values(a))
               if (v && typeof v === "object" && (v as any).value === true) {
@@ -585,6 +600,11 @@ export class EnrollmentService {
             validMedicalDocuments(w);
           }
         }
+        if (n <= 16)
+          await tx.signingRequest.updateMany({
+            where: { workflowId: id, status: "PENDING" },
+            data: { status: "REVOKED" },
+          });
         const latest = latestSteps(w.steps);
         await tx.workflowStep.create({
           data: {
@@ -710,6 +730,41 @@ export class EnrollmentService {
           )
         )
           throw new BadRequestException("החרגה אינה קיימת בכיסויי המוצר");
+        let waitingWaiver = null;
+        if (b.waiveWaiting === true) {
+          if (decision !== "APPROVE")
+            throw new BadRequestException("ביטול אכשרה מחייב אישור חיתום");
+          const prior = stepAnswers(w, 9);
+          const configured = await productFor(tx, w);
+          const evidence = w.attachments.find(
+            (x) => x.id === prior.noClaimsAttachmentId,
+          );
+          const start = date(stepAnswers(w, 4).startDate, "תחילת כיסוי");
+          if (
+            !configured.waitingWaiverAllowed ||
+            prior.noClaims !== true ||
+            !evidence ||
+            evidence.kind !== "NO_CLAIMS" ||
+            evidence.status !== "APPROVED" ||
+            evidence.reviewedBy === approval.requestedBy ||
+            prior.claimFreeMonths < configured.minClaimFreeMonths ||
+            date(prior.priorCoverageEnd, "סיום הכיסוי הקודם").getTime() <
+              start.getTime() - 86400000
+          )
+            throw new ConflictException(
+              "תנאי המוצר, רציפות הכיסוי או האסמכתה המאושרת אינם מאפשרים ביטול אכשרה",
+            );
+          waitingWaiver = {
+            originalWaitingDays: configured.waitingDays,
+            waitingDays: 0,
+            evidenceId: evidence.id,
+            reason,
+            approvedBy: actor.id,
+            approvedAt: new Date().toISOString(),
+            ruleVersion: 1,
+            simulation: true,
+          };
+        }
         await tx.approvalRequest.update({
           where: { id: approval.id },
           data: {
@@ -732,6 +787,7 @@ export class EnrollmentService {
               decision,
               reason,
               excludedCategories: categories,
+              waitingWaiver,
               decidedBy: actor.id,
               decidedAt: new Date().toISOString(),
             }),
@@ -766,7 +822,7 @@ export class EnrollmentService {
       throw new BadRequestException("שם קובץ לא תקין");
     const kind = choice(
       b.kind,
-      ["MEDICAL", "CHIP", "VACCINATION", "CONSENT"],
+      ["MEDICAL", "CHIP", "VACCINATION", "CONSENT", "NO_CLAIMS"],
       "סוג מסמך",
     );
     const mediaType = choice(
@@ -1001,7 +1057,12 @@ export class EnrollmentService {
             status: "ACTIVE",
             startDate,
             endDate: anniversary(startDate),
-            snapshot: json(q.product),
+            snapshot: json({
+              ...q.product,
+              ...(underwriting.waitingWaiver
+                ? { waitingDays: 0, waitingWaiver: underwriting.waitingWaiver }
+                : {}),
+            }),
             premiumCents: q.annualCents,
             annualLimitCents: q.product.annualLimitCents,
             conditionsAccepted: true,
@@ -1038,7 +1099,7 @@ export class EnrollmentService {
           customer,
           pet: animal,
           policy,
-          terms: q.product,
+          terms: policy.snapshot,
           applicationNumber: w.application!.number,
           steps: Object.values(latestSteps(w.steps)),
           schedule,
@@ -1064,6 +1125,7 @@ export class EnrollmentService {
               signedBy: stepAnswers(w, 16).signerName,
             },
           });
+          await tx.documentArtifact.create({ data: { documentId: d.id } });
           docs.push(d.id);
         }
         if (w.renewal) {
@@ -1080,6 +1142,9 @@ export class EnrollmentService {
               signedAt: new Date(stepAnswers(w, 16).signedAt),
               signedBy: stepAnswers(w, 16).signerName,
             },
+          });
+          await tx.documentArtifact.create({
+            data: { documentId: renewalDocument.id },
           });
           docs.push(renewalDocument.id);
         }

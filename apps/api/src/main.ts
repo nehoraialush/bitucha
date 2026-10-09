@@ -1,3 +1,4 @@
+import { SigningService } from "./signing";
 import { EmployeeService } from "./employees";
 import { BusinessActionService } from "./business-actions";
 import { SystemResetService } from "./system-reset";
@@ -42,11 +43,110 @@ import {
   actorPermissions,
 } from "./auth";
 import { InsuranceService } from "./service";
-import { documentHtml, documentPdf, authorizeDocument } from "./documents";
+import {
+  documentHtml,
+  documentPdf,
+  authorizeDocument,
+  signingDocumentHtml,
+  htmlPdf,
+  startDocumentWorker,
+  artifactStatus,
+  retryDocument,
+  listDocuments,
+} from "./documents";
 @Controller("api/v1")
 @ApiTags("ביטוחה")
 @ApiCookieAuth("bitucha_session")
 class ApiController {
+  private signing = new SigningService();
+  @Post("applications/:id/signing-requests") signingCreate(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.signing.create(r.actor, id, b, key);
+  }
+  @Get("applications/:id/signing-requests") signingMonitor(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+  ) {
+    return this.signing.monitor(r.actor, id);
+  }
+  @Post("signing-requests/:id/revoke") signingRevoke(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.signing.revoke(r.actor, id, key);
+  }
+  @Post("signing-requests/:id/messages") signingAssist(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.signing.assist(r.actor, id, b, key);
+  }
+  @Get("signing/document") async signingDocument(
+    @Headers("x-signing-token") token: string,
+    @Query("kind") kind: string,
+    @Query("format") format: string,
+    @Res() res: Response,
+  ) {
+    if (!["AGREEMENT", "HEALTH", "PAYMENT"].includes(kind))
+      throw new HttpException("סוג מסמך אינו תקין", 400);
+    const data = await this.signing.view(token);
+    const html = signingDocumentHtml(data.snapshot, kind, data.contentHash);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (format === "pdf") {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="bitucha-${kind}.pdf"`,
+      );
+      res.send(await htmlPdf(html));
+    } else {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    }
+  }
+  @Get("signing/view") signingView(@Headers("x-signing-token") token: string) {
+    return this.signing.view(token);
+  }
+  @Post("signing/event") signingEvent(
+    @Headers("x-signing-token") token: string,
+    @Body() b: any,
+  ) {
+    return this.signing.event(token, b);
+  }
+  @Post("signing/sign") signingComplete(
+    @Headers("x-signing-token") token: string,
+    @Body() b: any,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return this.signing.sign(token, b, key);
+  }
+  @Get("documents") documentList(
+    @Req() r: AuthRequest,
+    @Query("q") q: string,
+    @Query("status") status: string,
+  ) {
+    return listDocuments(r.actor, q || "", status || "");
+  }
+  @Get("documents/:id/production-status") documentProduction(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+  ) {
+    return artifactStatus(r.actor, id);
+  }
+  @Post("documents/:id/retry-pdf") documentRetry(
+    @Req() r: AuthRequest,
+    @Param("id") id: string,
+    @Headers("idempotency-key") key: string,
+  ) {
+    return retryDocument(r.actor, id, key);
+  }
   private service = new InsuranceService();
   private employees = new EmployeeService();
   @Get("employees") employeeList(@Req() r: AuthRequest) {
@@ -337,7 +437,16 @@ class ApiController {
         "Content-Disposition",
         'inline; filename="bitucha-document.pdf"',
       );
-    res.send(await documentPdf(id));
+    const pdf = await documentPdf(id);
+    await db.auditEvent.create({
+      data: {
+        employeeId: r.actor.id,
+        action: "document.download",
+        entityId: id,
+        processId: id,
+      },
+    });
+    res.send(pdf);
   }
   @Post("documents/:id/sign-simulated") sign(
     @Req() r: AuthRequest,
@@ -444,6 +553,11 @@ export async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   app.use(expressJson({ limit: "2mb" }));
   app.use(cookieParser());
+  app.use("/api/v1/signing", (_req: Request, res: Response, next: any) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    next();
+  });
   app.useGlobalGuards(new SessionGuard());
   app.useGlobalFilters(new Errors());
   const config = new DocumentBuilder()
@@ -468,6 +582,7 @@ export async function bootstrap() {
     Number(process.env.PORT || 3000),
     process.env.API_HOST || "0.0.0.0",
   );
+  startDocumentWorker();
   return app;
 }
 bootstrap().catch((e) => {

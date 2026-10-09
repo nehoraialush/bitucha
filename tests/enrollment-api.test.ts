@@ -5,7 +5,7 @@ import { db } from "../apps/api/src/db";
 import {
   enrollmentSteps,
   medicalQuestions,
-  bodySystems,
+  compactBodySystems,
   declarations,
 } from "../packages/domain/src/enrollment";
 const base = process.env.TEST_API_URL || "http://127.0.0.1:3000/api/v1";
@@ -84,10 +84,12 @@ const answers = (step: number) =>
       5: Object.fromEntries(
         medicalQuestions.map((q) => [q.key, { value: false }]),
       ),
-      6: Object.fromEntries(bodySystems.map((q) => [q.key, { value: false }])),
+      6: Object.fromEntries(
+        compactBodySystems.map((q) => [q.key, { value: false }]),
+      ),
       7: { none: true, records: [] },
       8: { vaccinated: true, records: [] },
-      9: { productId: product.id },
+      9: { productId: product.id, noClaims: false },
       10: { confirmed: true, records: [] },
       11: { accepted: true },
       12: { requested: true },
@@ -167,6 +169,8 @@ beforeAll(async () => {
       deductibleCents: 10000,
       reimbursementBps: 8000,
       waitingDays: 30,
+      waitingWaiverAllowed: true,
+      minClaimFreeMonths: 12,
       coverages: [{ code: "VISIT", name: "ביקור", limitCents: 100000 }],
     },
   });
@@ -175,6 +179,10 @@ afterAll(async () => {
   for (const id of workflows) {
     const a = await db.application.findUnique({ where: { workflowId: id } });
     if (a?.customerId) customers.push(a.customerId);
+    await db.signingEvent.deleteMany({
+      where: { request: { workflowId: id } },
+    });
+    await db.signingRequest.deleteMany({ where: { workflowId: id } });
     await db.approvalRequest.deleteMany({ where: { workflowId: id } });
     await db.workflowAttachment.deleteMany({ where: { workflowId: id } });
     await db.workflowStep.deleteMany({ where: { workflowId: id } });
@@ -212,15 +220,16 @@ afterAll(async () => {
 describe.sequential("Enrollment workflow on real PostgreSQL", () => {
   it("only advertises implemented actions permitted for the employee", async () => {
     const admin = await req("/business-actions");
-    expect(admin.data.length).toBe(16);
+    expect(admin.data.length).toBe(20);
     const reviewer = await req(
       "/business-actions",
       undefined,
       randomUUID(),
       true,
     );
-    expect(reviewer.data.map((a: any) => a.id)).toEqual([
+    expect(reviewer.data.map((a: any) => a.id).sort()).toEqual([
       "application.underwrite",
+      "signing.assist",
     ]);
     expect((await req("/business-actions/unknown/execute", {})).status).toBe(
       404,
@@ -610,5 +619,233 @@ describe.sequential("Enrollment workflow on real PostgreSQL", () => {
       409,
     );
     expect(await db.policy.count({ where: { renewedFromId: old.id } })).toBe(1);
+  });
+  it("requires reviewed no-claims evidence before a waiting-period waiver and freezes the approved terms", async () => {
+    w = await create();
+    for (let n = 1; n <= 8; n++) expect((await save(n)).status).toBe(201);
+    const upload = await req(`/applications/${w.id}/attachments`, {
+      version: w.version,
+      filename: "no-claims.pdf",
+      mediaType: "application/pdf",
+      kind: "NO_CLAIMS",
+      base64: Buffer.from("%PDF-1.4\nsynthetic evidence").toString("base64"),
+    });
+    expect(upload.status).toBe(201);
+    w = upload.data;
+    const evidence = w.attachments.find((a: any) => a.kind === "NO_CLAIMS");
+    const selection = {
+      ...answers(9),
+      noClaims: true,
+      priorInsurer: "מבטח בדוי",
+      claimFreeMonths: 12,
+      priorCoverageEnd: answers(4).startDate,
+      noClaimsAttachmentId: evidence.id,
+    };
+    expect((await save(9, selection)).status).toBe(201);
+    for (let n = 10; n <= 12; n++) expect((await save(n)).status).toBe(201);
+    expect(w.status).toBe("WAITING_APPROVAL");
+    expect(
+      (
+        await req(
+          `/applications/${w.id}/underwrite`,
+          {
+            version: w.version,
+            decision: "APPROVE",
+            reason: "בדיקה",
+            waiveWaiting: true,
+          },
+          randomUUID(),
+          true,
+        )
+      ).status,
+    ).toBe(409);
+    const reviewed = await req(
+      `/applications/${w.id}/attachments/${evidence.id}/review`,
+      { version: w.version, status: "APPROVED", reason: "אסמכתה בדויה נבדקה" },
+      randomUUID(),
+      true,
+    );
+    expect(reviewed.status).toBe(201);
+    w = reviewed.data;
+    const approved = await req(
+      `/applications/${w.id}/underwrite`,
+      {
+        version: w.version,
+        decision: "APPROVE",
+        reason: "אושר ביטול אכשרה לפי כלל סימולציה",
+        waiveWaiting: true,
+      },
+      randomUUID(),
+      true,
+    );
+    expect(approved.status).toBe(201);
+    w = approved.data;
+    for (let n = 13; n <= 17; n++) expect((await save(n)).status).toBe(201);
+    const issued = await req(`/applications/${w.id}/issue`, {
+      version: w.version,
+    });
+    expect(issued.status).toBe(201);
+    const policy = await db.policy.findUniqueOrThrow({
+      where: { id: issued.data.policy.id },
+    });
+    expect((policy.snapshot as any).waitingDays).toBe(0);
+    expect((policy.snapshot as any).waitingWaiver.evidenceId).toBe(evidence.id);
+    expect(
+      (await db.productVersion.findUniqueOrThrow({ where: { id: product.id } }))
+        .waitingDays,
+    ).toBe(30);
+    const doc = await db.document.findFirstOrThrow({
+      where: { policyId: policy.id, type: "POLICY" },
+    });
+    expect((doc.snapshot as any).terms.waitingDays).toBe(0);
+  });
+  it("issues a scoped remote signature link, records help and atomically completes step 16 once", async () => {
+    w = await create();
+    for (let n = 1; n <= 15; n++) expect((await save(n)).status).toBe(201);
+    const result = await req(`/applications/${w.id}/signing-requests`, {
+      version: w.version,
+    });
+    expect(result.status).toBe(201);
+    const invitation = result.data;
+    expect(invitation.token).toMatch(/^[a-f0-9]{64}$/);
+    const publicReq = async (
+      path: string,
+      body?: any,
+      key = randomUUID(),
+      token = invitation.token,
+    ) => {
+      commands.push(key);
+      const r = await fetch(base + "/signing/" + path, {
+        method: body ? "POST" : "GET",
+        headers: {
+          "X-Signing-Token": token,
+          "Content-Type": "application/json",
+          "Idempotency-Key": key,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: r.status, data: await r.json() };
+    };
+    expect(
+      (await publicReq("view", undefined, randomUUID(), "0".repeat(64))).status,
+    ).toBe(404);
+    const opened = await publicReq("view");
+    expect(opened.status).toBe(200);
+    expect(opened.data.snapshot.customer.firstName).toBe("לקוח");
+    expect(JSON.stringify(opened.data)).not.toContain("tokenHash");
+    expect(JSON.stringify(opened.data)).not.toContain("passwordHash");
+    expect(
+      (await publicReq("event", { kind: "OPENED", trackingAccepted: false }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await publicReq("event", { kind: "OPENED", trackingAccepted: true }))
+        .status,
+    ).toBe(201);
+    expect(
+      (
+        await publicReq("event", {
+          kind: "HELP_REQUEST",
+          message: "צריך עזרה",
+          trackingAccepted: true,
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await req(`/signing-requests/${invitation.id}/messages`, {
+          message: "אפשר לקרוא כל מסמך בנפרד",
+        })
+      ).status,
+    ).toBe(201);
+    const payload = {
+      ...answers(16),
+      contentHash: invitation.contentHash,
+      trackingAccepted: true,
+      reviewedDocuments: true,
+    };
+    const signKey = randomUUID();
+    expect((await publicReq("sign", payload, signKey)).status).toBe(409);
+    for (const document of ["AGREEMENT", "HEALTH", "PAYMENT"])
+      expect(
+        (
+          await publicReq("event", {
+            kind: "DOCUMENT_VIEWED",
+            document,
+            trackingAccepted: true,
+          })
+        ).status,
+      ).toBe(201);
+    expect(
+      (await publicReq("sign", { ...payload, contentHash: "forged" })).status,
+    ).toBe(400);
+    expect((await publicReq("sign", payload, signKey)).status).toBe(201);
+    expect((await publicReq("sign", payload, signKey)).status).toBe(201);
+    expect((await publicReq("sign", payload)).status).toBe(409);
+    const updated = await req("/applications/" + w.id);
+    w = updated.data;
+    expect(w.currentStep).toBe(17);
+    expect(w.steps.find((s: any) => s.number === 16).answers.source).toBe(
+      "REMOTE_LINK",
+    );
+    expect(
+      await db.workflowStep.count({
+        where: { workflowId: w.id, number: 16, completed: true },
+      }),
+    ).toBe(1);
+    const monitor = await req(`/applications/${w.id}/signing-requests`);
+    expect(
+      monitor.data[0].events.some((e: any) => e.kind === "COMPLETED"),
+    ).toBe(true);
+    expect(JSON.stringify(monitor.data)).not.toContain(invitation.token);
+    const stored = await db.command.findMany({
+      where: { action: "application.signing.create" },
+    });
+    expect(JSON.stringify(stored)).not.toContain(invitation.token);
+    expect((await save(17)).status).toBe(201);
+    expect(
+      (await req(`/applications/${w.id}/issue`, { version: w.version })).status,
+    ).toBe(201);
+  });
+  it("revokes pending signature links on content changes and expires them without exposing documents", async () => {
+    w = await create();
+    for (let n = 1; n <= 15; n++) expect((await save(n)).status).toBe(201);
+    const invitation = (
+      await req(`/applications/${w.id}/signing-requests`, {
+        version: w.version,
+      })
+    ).data;
+    expect((await save(15, answers(15), false)).status).toBe(201);
+    const revoked = await fetch(base + "/signing/view", {
+      headers: { "X-Signing-Token": invitation.token },
+    });
+    expect(revoked.status).toBe(404);
+    expect((await save(15)).status).toBe(201);
+    const second = (
+      await req(`/applications/${w.id}/signing-requests`, {
+        version: w.version,
+      })
+    ).data;
+    await db.signingRequest.update({
+      where: { id: second.id },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    expect(
+      (
+        await fetch(base + "/signing/view", {
+          headers: { "X-Signing-Token": second.token },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await req(
+          `/applications/${w.id}/signing-requests`,
+          undefined,
+          randomUUID(),
+          true,
+        )
+      ).status,
+    ).toBe(200);
   });
 });
